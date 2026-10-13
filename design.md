@@ -25,12 +25,22 @@ input video ─▶ 1. decode ─▶ 2. estimate motion ─▶ 3. split jitter / 
 
 ### 2. Frame-by-frame motion estimation
 
-- For each consecutive pair of frames (t-1, t), estimate the global translation `d_t = (dx_t, dy_t)`.
-- Method: **phase correlation** on a Hann-windowed, downscaled luma frame (pure Rust via
-  `rustfft`), with sub-pixel peak refinement. It is fast and reliable for global translation,
-  and it has no feature-tracking dependencies.
+- For every frame t, estimate its content position `P_t = (x, y)` relative to frame 0.
+- Method: **phase correlation** on Hann-windowed luma frames, downscaled so the longest side
+  is ≤ 640 px (pure Rust via `rustfft`). It is fast and reliable for global translation, and
+  it has no feature-tracking dependencies.
+  - **Regularized normalization:** the cross-power spectrum is normalized by `|R| + ε`
+    instead of `|R|`. Frequencies that hold mostly noise then can't swamp the peak, which
+    matters on smooth content.
+  - **Gaussian low-pass** on the cross-power spectrum. This gives a Gaussian-shaped peak,
+    which a log-parabola fit locates to sub-pixel accuracy (< 0.05 px on synthetic shifts).
+- **Keyframe tracking:** each frame is matched against a keyframe, not the previous frame.
+  Chaining frame-to-frame estimates turns their ~0.1 px errors into a random-walk drift
+  (~0.7 px over 60 frames in testing). Shake oscillates around one spot, so one keyframe
+  stays valid for long stretches. The keyframe is replaced (matched via the previous frame)
+  when the frame moves more than 10% of the frame size away from it, or the match turns unreliable.
 - The confidence comes from the peak-to-sidelobe ratio. If confidence is low (scene cut, heavy
-  blur), the frame gets `d_t = 0` and is flagged, so it can't poison the path.
+  blur), the frame keeps the previous position and is flagged, so it can't poison the path.
 - v1 handles translation only. Rotation and zoom are listed under Future.
 
 ### 3. Separate jitter from intentional movement (per axis, independently)
@@ -38,37 +48,51 @@ input video ─▶ 1. decode ─▶ 2. estimate motion ─▶ 3. split jitter / 
 **Key point: jitter has to be measured as displacement, not as frame-to-frame delta.** Suppose
 the threshold is 2 px and the camera moves by deltas of `+1, +1, +1, -1, -1, -1`. Every delta is
 under the threshold, but the frame drifts 3 px away. A crop sized from the deltas alone would be
-too small. So we work on the cumulative camera path:
+too small. So we work on the camera path from step 2:
 
-- Raw path: `P_t = Σ d_i` (per axis).
+- Raw path: `P_t` (per axis).
 - Intended path `I_t`: where the camera "means" to point.
 - Jitter: `J_t = P_t − I_t`. This is the correction that gets applied to frame t.
 
-The intended path follows a **deadband ("rubber band") rule** with threshold `T`. On top of
-that, motion only counts as intentional once it has stayed past `T` for at least `N` frames
-(`--intent-frames`, default 5). Analysis runs offline, so this check **looks ahead** in the
-clip instead of waiting. A confirmed pan therefore starts on its very first frame, with no delay.
+The intended path follows a **deadband rule** with threshold `T`. On top of that, motion only
+counts as intentional once it has stayed past `T` for at least `N` frames (`--intent-frames`,
+default 5). Analysis runs offline, so this check **looks ahead** in the clip instead of waiting.
 
 ```
-e = P_t − I_{t-1}
-if |e| <= T:
-    I_t = I_{t-1} + k_recenter · e          # jitter; drift slowly back to center
-elif |P − I_{t-1}| > T for frames t..t+N-1:
-    I_t = P_t − sign(e) · T                 # intentional: sustained ≥ N frames → intent is dragged along
-else:
-    I_t = P_t − sign(e) · T                 # short spike (bump): still jitter, correction clamped at ±T
+d = P_t − P_{t-1};  e = P_t − I_{t-1}
+if panning and d moves in the pan direction:     # pan continues
+    J_t = J_{t-1} · (1 − r_pan);  I_t = P_t − J_t
+elif |e| <= T:                                   # jitter
+    I_t = I_{t-1} + k_recenter · e;  J_t = P_t − I_t
+elif |P − I_{t-1}| > T on the same side for frames t..t+N-1:   # pan confirmed
+    relabel the ramp-up (preceding jitter frames already moving this way) as pan
+    J carries over from before the ramp, easing by (1 − r_pan) per frame;  I_t = P_t − J_t
+else:                                            # bump
+    I_t = I_{t-1};  J_t = clamp(e, −T, T)
 ```
 
-- Within the threshold, the output holds still and the shake is cancelled.
-- When motion stays past the threshold for N or more frames, it is intentional. The excess goes
-  straight through to the output, so pans and tilts keep the camera's real speed. No smoothing
-  lag is added.
-- When motion goes past the threshold for fewer than N frames, it is a **bump** and is labelled
-  jitter. It is corrected as far as the margin allows (±T). Only the part beyond T shows
-  through, briefly. Its label stays jitter, so it doesn't start a pan or reset the intended path.
-- `k_recenter` (small, e.g. 0.02/frame) eases the correction back toward 0 while the shot is
-  still. Without it, a pan would leave the correction parked at ±T and the margin would be used up.
+- **Jitter:** within the threshold, the output holds still and the shake is cancelled.
+- **Intentional (pan):** motion that stays past the threshold for ≥ N frames passes through at
+  the camera's real speed, with no smoothing lag. A pan lasts as long as the camera keeps
+  moving in the same direction.
+  - *Ramp-up:* a pan is only confirmed once it is past T. The frames leading into it, back
+    to where the camera started moving that way, would otherwise read as jitter, and the
+    correction would build up to T. That would cost the full T of crop for any pan slower
+    than T px/frame. Since analysis is offline, those frames are relabelled as part of the pan.
+  - *No jump:* when a pan starts, the existing correction carries over unchanged. It then
+    eases to 0 (`r_pan = 0.1`/frame) while the camera moves, where the change is invisible.
+    So a clean pan costs **no crop**. (An earlier draft dragged the intended path at exactly T
+    behind the camera. That pinned the correction at ±T, which made any clip with a pan take
+    the maximum crop.)
+- **Bump:** motion past the threshold for fewer than N frames. It is corrected as far as the
+  margin allows (±T), and only the part beyond T shows through, briefly. A bump leaves the
+  intended path where it was, so it doesn't start a pan or reset the intended path.
+- `k_recenter` (`--recenter`, default 0.02/frame) eases the correction back toward 0 while
+  within the threshold. If the camera settles at a new spot, that spot gradually becomes the
+  intended position.
 - By construction `|J_t| <= T` always, so no frame ever needs more than T px of margin.
+- After a pan, the camera comes to rest wherever the shake left it. The margin that follows can
+  reach the shake's peak-to-peak amplitude, which is still well below T.
 
 Each frame is also labelled `jitter`, `bump` or `intentional` per axis, for reporting and debugging.
 
@@ -100,7 +124,7 @@ Each frame is also labelled `jitter`, `bump` or `intentional` per axis, for repo
 |-------------|-------------------------------------------------------|
 | `main.rs`   | CLI (clap), orchestration, report                     |
 | `video.rs`  | ffmpeg probe / decode / encode pipes                  |
-| `motion.rs` | phase-correlation translation estimate + confidence   |
+| `motion.rs` | phase correlation, confidence, keyframe tracker       |
 | `path.rs`   | cumulative path, deadband filter, jitter labelling    |
 | `crop.rs`   | max jitter per axis → crop rectangle                  |
 | `render.rs` | sub-pixel shift + crop                                |
