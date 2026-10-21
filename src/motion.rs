@@ -1,4 +1,4 @@
-//! Global translation between consecutive frames via phase correlation.
+//! Camera motion between frames via tiled phase correlation.
 
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
@@ -26,79 +26,212 @@ impl Shift {
     }
 }
 
+/// Tiles whose shifts lie within this distance (analysis px) of each other agree.
+const CONSENSUS_RADIUS: f64 = 1.5;
+
+/// Minimum number of agreeing tiles for a frame's motion to be trusted.
+const MIN_SUPPORT: usize = 3;
+
+/// Consecutive frames without a trusted match after which tracking restarts from
+/// the current frame (e.g. after a scene cut), accepting a jump in the path.
+const MAX_FAILURES: usize = 3;
+
 /// Camera position of a frame relative to the first frame, in analysis pixels.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Position {
     pub x: f64,
     pub y: f64,
+    /// Mean peak-to-sidelobe ratio of the agreeing tiles.
     pub confidence: f64,
-    /// False when no reliable match was found and the previous position was carried over.
+    /// Number of tiles that agreed on the motion.
+    pub support: usize,
+    /// False when the motion could not be trusted; the position is then filled in
+    /// later by `outliers::repair`.
     pub reliable: bool,
 }
 
-/// Tracks the content position of each frame. Frames are matched against a
-/// keyframe rather than the previous frame, so per-match errors don't accumulate
-/// into drift while the camera stays around one spot. The keyframe is replaced
-/// when the frame moves too far from it or the match becomes unreliable.
+/// Motion agreed on by a majority of tiles.
+#[derive(Debug, Clone, Copy)]
+struct Consensus {
+    dx: f64,
+    dy: f64,
+    confidence: f64,
+    support: usize,
+}
+
+/// Spectra of every tile of a frame, with the frame's position.
+struct Reference {
+    spectra: Vec<Vec<Complex<f32>>>,
+    x: f64,
+    y: f64,
+}
+
+/// Tracks the camera position of each frame.
+///
+/// Each frame is split into a grid of tiles that are matched independently, and
+/// the motion most tiles agree on wins. Regions that move on their own (water, a
+/// moving subject) disagree with the camera motion and are outvoted.
+///
+/// Frames are matched against a keyframe rather than the previous frame, so
+/// per-match errors don't accumulate into drift while the camera stays around one
+/// spot. The keyframe is replaced (via the last trusted frame) when the frame
+/// moves too far from it. Untrusted frames never become a reference.
 pub struct Tracker {
     correlator: PhaseCorrelator,
+    width: usize,
+    tile_width: usize,
+    tile_height: usize,
+    /// Top-left corner of each tile.
+    tiles: Vec<(usize, usize)>,
     /// Offset from the keyframe (analysis px) beyond which it is replaced.
     max_offset: f64,
-    key: Option<(Vec<Complex<f32>>, Position)>,
-    prev: Option<(Vec<Complex<f32>>, Position)>,
+    key: Option<Reference>,
+    /// Last trusted frame.
+    prev: Option<Reference>,
+    failures: usize,
+    tile_buf: Vec<u8>,
 }
 
 impl Tracker {
     pub fn new(width: usize, height: usize) -> Self {
+        // About 4x3 tiles at the 640 px analysis size, keeping tiles >= ~110 px.
+        let cols = (width / 150).clamp(2, 4);
+        let rows = (height / 110).clamp(2, 3);
+        let (tile_width, tile_height) = (width / cols, height / rows);
+        let tiles = (0..rows)
+            .flat_map(|r| (0..cols).map(move |c| (c * tile_width, r * tile_height)))
+            .collect();
         Self {
-            correlator: PhaseCorrelator::new(width, height),
-            max_offset: 0.1 * width.min(height) as f64,
+            correlator: PhaseCorrelator::new(tile_width, tile_height),
+            width,
+            tile_width,
+            tile_height,
+            tiles,
+            max_offset: 0.15 * tile_width.min(tile_height) as f64,
             key: None,
             prev: None,
+            failures: 0,
+            tile_buf: Vec::new(),
         }
     }
 
     pub fn track(&mut self, gray: &[u8]) -> Position {
-        let spectrum = self.correlator.spectrum(gray);
-        let (Some((key_spec, key)), Some((prev_spec, prev))) = (&self.key, &self.prev) else {
-            let first = Position {
+        let spectra = self.tile_spectra(gray);
+        let (Some(key), Some(prev)) = (&self.key, &self.prev) else {
+            self.key = Some(Reference {
+                spectra: spectra.clone(),
+                x: 0.0,
+                y: 0.0,
+            });
+            self.prev = Some(Reference {
+                spectra,
+                x: 0.0,
+                y: 0.0,
+            });
+            return Position {
+                support: self.tiles.len(),
                 reliable: true,
                 ..Default::default()
             };
-            self.key = Some((spectrum.clone(), first));
-            self.prev = Some((spectrum, first));
-            return first;
         };
 
-        let from_key = self.correlator.shift(key_spec, &spectrum);
-        let position =
-            if from_key.is_reliable() && from_key.dx.hypot(from_key.dy) <= self.max_offset {
-                Position {
-                    x: key.x + from_key.dx,
-                    y: key.y + from_key.dy,
-                    confidence: from_key.confidence,
-                    reliable: true,
-                }
-            } else {
-                let from_prev = self.correlator.shift(prev_spec, &spectrum);
-                let reliable = from_prev.is_reliable();
-                let (dx, dy) = if reliable {
-                    (from_prev.dx, from_prev.dy)
-                } else {
-                    (0.0, 0.0)
-                };
-                let position = Position {
-                    x: prev.x + dx,
-                    y: prev.y + dy,
-                    confidence: from_prev.confidence,
-                    reliable,
-                };
-                self.key = Some((spectrum.clone(), position));
-                position
+        let correlator = &mut self.correlator;
+        let max_offset = self.max_offset;
+        let matched = consensus(correlator, &key.spectra, &spectra)
+            .filter(|c| c.dx.hypot(c.dy) <= max_offset)
+            .map(|c| (c, key.x, key.y, false))
+            .or_else(|| {
+                consensus(correlator, &prev.spectra, &spectra).map(|c| (c, prev.x, prev.y, true))
+            });
+
+        let Some((c, base_x, base_y, rekey)) = matched else {
+            let (x, y) = (prev.x, prev.y);
+            self.failures += 1;
+            if self.failures >= MAX_FAILURES {
+                self.failures = 0;
+                self.key = Some(Reference {
+                    spectra: spectra.clone(),
+                    x,
+                    y,
+                });
+                self.prev = Some(Reference { spectra, x, y });
+            }
+            return Position {
+                x,
+                y,
+                ..Default::default()
             };
-        self.prev = Some((spectrum, position));
-        position
+        };
+
+        self.failures = 0;
+        let (x, y) = (base_x + c.dx, base_y + c.dy);
+        if rekey {
+            self.key = Some(Reference {
+                spectra: spectra.clone(),
+                x,
+                y,
+            });
+        }
+        self.prev = Some(Reference { spectra, x, y });
+        Position {
+            x,
+            y,
+            confidence: c.confidence,
+            support: c.support,
+            reliable: true,
+        }
     }
+
+    fn tile_spectra(&mut self, gray: &[u8]) -> Vec<Vec<Complex<f32>>> {
+        let (tw, th) = (self.tile_width, self.tile_height);
+        let mut spectra = Vec::with_capacity(self.tiles.len());
+        for &(x0, y0) in &self.tiles {
+            self.tile_buf.clear();
+            for y in y0..y0 + th {
+                let row = y * self.width + x0;
+                self.tile_buf.extend_from_slice(&gray[row..row + tw]);
+            }
+            spectra.push(self.correlator.spectrum(&self.tile_buf));
+        }
+        spectra
+    }
+}
+
+/// The shift supported by the most tiles (ties broken by total confidence),
+/// averaged over the agreeing tiles weighted by confidence.
+fn consensus(
+    correlator: &mut PhaseCorrelator,
+    reference: &[Vec<Complex<f32>>],
+    current: &[Vec<Complex<f32>>],
+) -> Option<Consensus> {
+    let shifts: Vec<Shift> = reference
+        .iter()
+        .zip(current)
+        .map(|(r, c)| correlator.shift(r, c))
+        .filter(Shift::is_reliable)
+        .collect();
+    let agreeing = |a: &Shift| -> Vec<&Shift> {
+        shifts
+            .iter()
+            .filter(|b| (a.dx - b.dx).hypot(a.dy - b.dy) <= CONSENSUS_RADIUS)
+            .collect()
+    };
+    let inliers = shifts
+        .iter()
+        .map(agreeing)
+        .max_by(|a, b| {
+            let total = |v: &Vec<&Shift>| v.iter().map(|s| s.confidence).sum::<f64>();
+            a.len().cmp(&b.len()).then(total(a).total_cmp(&total(b)))
+        })
+        .filter(|inliers| inliers.len() >= MIN_SUPPORT)?;
+
+    let weight: f64 = inliers.iter().map(|s| s.confidence).sum();
+    Some(Consensus {
+        dx: inliers.iter().map(|s| s.dx * s.confidence).sum::<f64>() / weight,
+        dy: inliers.iter().map(|s| s.dy * s.confidence).sum::<f64>() / weight,
+        confidence: weight / inliers.len() as f64,
+        support: inliers.len(),
+    })
 }
 
 /// Reusable phase correlator for grayscale frames of a fixed size.

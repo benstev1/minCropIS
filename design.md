@@ -34,13 +34,25 @@ input video ─▶ 1. decode ─▶ 2. estimate motion ─▶ 3. split jitter / 
     matters on smooth content.
   - **Gaussian low-pass** on the cross-power spectrum. This gives a Gaussian-shaped peak,
     which a log-parabola fit locates to sub-pixel accuracy (< 0.05 px on synthetic shifts).
+- **Tile consensus:** each analysis frame is split into a grid of tiles (about 4×3 at 640 px),
+  and each tile is matched on its own. The shift that most tiles agree on (within 1.5 px)
+  wins, averaged over the agreeing tiles. At least 3 tiles must agree. Regions that move on
+  their own, like water or a moving subject, disagree with the camera and get outvoted.
 - **Keyframe tracking:** each frame is matched against a keyframe, not the previous frame.
   Chaining frame-to-frame estimates turns their ~0.1 px errors into a random-walk drift
   (~0.7 px over 60 frames in testing). Shake oscillates around one spot, so one keyframe
-  stays valid for long stretches. The keyframe is replaced (matched via the previous frame)
-  when the frame moves more than 10% of the frame size away from it, or the match turns unreliable.
-- The confidence comes from the peak-to-sidelobe ratio. If confidence is low (scene cut, heavy
-  blur), the frame keeps the previous position and is flagged, so it can't poison the path.
+  stays valid for long stretches. The keyframe is replaced (matched via the last trusted
+  frame) when the frame moves more than 15% of a tile away from it. Untrusted frames never
+  become a reference. After 3 failed frames in a row (e.g. a scene cut), tracking restarts
+  from the current frame.
+- **Outlier repair** (`outliers.rs`), run on the whole path after tracking:
+  - *Weak matches:* frames whose confidence is below 30% of the clip's median are rejected.
+    This adapts to how much texture the footage has, which a fixed cutoff can't do.
+  - *Impossible motion:* a frame more than 1% of the frame size away from the median of
+    its ±2-frame neighbourhood is rejected. A camera can't jump there and back that fast.
+    Steady pans and multi-frame jolts pass this check.
+  - Rejected frames are filled in by interpolating between the trusted frames around them,
+    not by assuming no motion.
 - v1 handles translation only. Rotation and zoom are listed under Future.
 
 ### 3. Separate jitter from intentional movement (per axis, independently)
@@ -124,7 +136,8 @@ Each frame is also labelled `jitter`, `bump` or `intentional` per axis, for repo
 |-------------|-------------------------------------------------------|
 | `main.rs`   | CLI (clap), orchestration, report                     |
 | `video.rs`  | ffmpeg probe / decode / encode pipes                  |
-| `motion.rs` | phase correlation, confidence, keyframe tracker       |
+| `motion.rs` | phase correlation, tile consensus, keyframe tracker   |
+| `outliers.rs` | reject weak / impossible measurements, interpolate  |
 | `path.rs`   | cumulative path, deadband filter, jitter labelling    |
 | `crop.rs`   | max jitter per axis → crop rectangle                  |
 | `render.rs` | sub-pixel shift + crop                                |

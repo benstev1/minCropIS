@@ -87,7 +87,7 @@ fn main() -> Result<()> {
     }
     if a.unreliable_frames > 0 {
         println!(
-            "unreliable:    {} frames (motion treated as 0)",
+            "unreliable:    {} frames (motion interpolated)",
             a.unreliable_frames
         );
     }

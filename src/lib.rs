@@ -3,6 +3,7 @@
 
 pub mod crop;
 pub mod motion;
+pub mod outliers;
 pub mod path;
 pub mod render;
 pub mod video;
@@ -33,9 +34,12 @@ pub struct FrameReport {
     /// Measured content motion from the previous frame, in full-resolution pixels.
     pub dx: f64,
     pub dy: f64,
-    /// Peak-to-sidelobe ratio of this frame's match (0 for the first frame).
+    /// Mean peak-to-sidelobe ratio of the agreeing tiles (0 for the first frame).
     pub confidence: f64,
-    /// False when the motion estimate was discarded (scene cut, blur) and treated as 0.
+    /// Number of tiles that agreed on this frame's motion.
+    pub support: usize,
+    /// False when the measurement was rejected (no tile consensus, weak for this clip,
+    /// or a physically impossible spike) and the position was interpolated.
     pub reliable: bool,
     pub x: AxisSample,
     pub y: AxisSample,
@@ -90,6 +94,7 @@ pub fn analyze(input: &Path, settings: Settings) -> Result<Analysis> {
     if positions.is_empty() {
         bail!("{} contains no frames", input.display());
     }
+    outliers::repair(&mut positions, aw, ah);
     let raw_x: Vec<f64> = positions.iter().map(|p| p.x * sx).collect();
     let raw_y: Vec<f64> = positions.iter().map(|p| p.y * sy).collect();
 
@@ -120,6 +125,7 @@ pub fn analyze(input: &Path, settings: Settings) -> Result<Analysis> {
                 dx: x.raw - prev_x,
                 dy: y.raw - prev_y,
                 confidence: positions[index].confidence,
+                support: positions[index].support,
                 reliable: positions[index].reliable,
                 x,
                 y,
