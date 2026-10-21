@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>minIS Stabilizer</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --text: #1d2330;
+    --muted: #667085;
+    --border: #d9dee7;
+    --accent: #2f6fed;
+    --accent-text: #ffffff;
+    --accent-soft: #e8effd;
+    --track: #e7eaf0;
+    --danger: #c4321c;
+    --danger-soft: #fdecea;
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111318;
+      --card: #1a1d24;
+      --text: #e8eaef;
+      --muted: #9aa3b2;
+      --border: #2e333d;
+      --accent: #6d9bff;
+      --accent-text: #0d1424;
+      --accent-soft: #1d2a45;
+      --track: #2a2f39;
+      --danger: #ff8a75;
+      --danger-soft: #3a1f1b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 48px 16px;
+  }
+  main { width: 100%; max-width: 560px; }
+  header { margin-bottom: 24px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  header p { margin: 0; color: var(--muted); }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+  }
+  [hidden] { display: none !important; }
+
+  .drop {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 40px 16px;
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop:focus-visible, .drop.over {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    outline: none;
+  }
+  .drop svg { width: 40px; height: 40px; color: var(--accent); }
+  .drop strong { font-size: 1.05rem; }
+  .drop span { color: var(--muted); font-size: .9rem; }
+  .file {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 16px;
+    padding: 12px 14px;
+    background: var(--accent-soft);
+    border-radius: 10px;
+    font-size: .95rem;
+  }
+  .file b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file span { color: var(--muted); white-space: nowrap; }
+
+  details { margin-top: 18px; }
+  summary { cursor: pointer; color: var(--muted); font-size: .95rem; }
+  .setting { margin-top: 14px; }
+  .setting label { display: flex; justify-content: space-between; font-weight: 600; font-size: .95rem; }
+  .setting output, .setting .value { font-variant-numeric: tabular-nums; color: var(--accent); }
+  .setting p { margin: 2px 0 0; color: var(--muted); font-size: .85rem; }
+  input[type=range] { width: 100%; accent-color: var(--accent); margin-top: 6px; }
+  input[type=number] {
+    width: 80px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--text);
+    font: inherit;
+  }
+
+  .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    margin-top: 20px;
+    padding: 12px 18px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--accent);
+    color: var(--accent-text);
+    font: inherit;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .button:disabled { opacity: .45; cursor: not-allowed; }
+  .button.secondary {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+    margin-top: 10px;
+  }
+
+  .steps { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 14px; }
+  .step { display: grid; grid-template-columns: 24px 1fr auto; gap: 4px 10px; align-items: center; color: var(--muted); }
+  .step .dot {
+    width: 20px; height: 20px; border-radius: 50%;
+    border: 2px solid var(--border);
+    display: grid; place-items: center;
+    font-size: 12px;
+  }
+  .step.active { color: var(--text); font-weight: 600; }
+  .step.active .dot { border-color: var(--accent); }
+  .step.done .dot { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  .step .pct { font-variant-numeric: tabular-nums; font-size: .9rem; }
+  .bar { grid-column: 2 / 4; height: 6px; background: var(--track); border-radius: 3px; overflow: hidden; }
+  .bar div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .hint { margin: 18px 0 0; color: var(--muted); font-size: .85rem; }
+
+  video { width: 100%; max-height: 60vh; border-radius: 10px; background: #000; display: block; }
+  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 16px; }
+  .stat { padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
+  .stat small { display: block; color: var(--muted); font-size: .8rem; }
+  .stat b { font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+  .note { margin: 14px 0 0; color: var(--muted); font-size: .9rem; }
+
+  .error { background: var(--danger-soft); color: var(--danger); padding: 14px; border-radius: 10px; overflow-wrap: anywhere; }
+  .error b { display: block; margin-bottom: 4px; }
+
+  @media (max-width: 420px) {
+    body { padding-top: 24px; }
+    .card { padding: 18px; }
+    .stats { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>minIS</h1>
+    <p>Removes camera shake with the smallest possible crop.</p>
+  </header>
+
+  <!-- 1. Choose a video -->
+  <section class="card" id="pick">
+    <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose a video">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 16V4m0 0-4 4m4-4 4 4"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+      </svg>
+      <strong>Drop a video here</strong>
+      <span>or click to browse</span>
+    </div>
+    <input type="file" id="input" accept="video/*" hidden>
+    <div class="file" id="chosen" hidden><b id="chosen-name"></b><span id="chosen-size"></span></div>
+
+    <details>
+      <summary>Settings</summary>
+      <div class="setting">
+        <label for="threshold">Shake threshold <output id="threshold-value">2%</output></label>
+        <input type="range" id="threshold" min="0.5" max="10" step="0.5" value="2">
+        <p>Movement up to this share of the frame counts as shake and is removed. The crop only grows as far as the shake actually goes.</p>
+      </div>
+      <div class="setting">
+        <label for="intent">Frames before movement counts as intentional <input type="number" id="intent" min="1" max="60" value="5"></label>
+        <p>Movement past the threshold that lasts this long is kept as a pan or tilt. Shorter jolts are smoothed.</p>
+      </div>
+    </details>
+
+    <button class="button" id="start" disabled>Stabilize</button>
+  </section>
+
+  <!-- 2. Working -->
+  <section class="card" id="work" hidden>
+    <div class="file"><b id="work-name"></b><span id="work-size"></span></div>
+    <ol class="steps">
+      <li class="step" data-step="upload"><span class="dot"></span><span>Uploading</span><span class="pct"></span><div class="bar"><div></div></div></li>
+      <li class="step" data-step="analyze"><span class="dot"></span><span>Measuring shake</span><span class="pct"></span><div class="bar"><div></div></div></li>
+      <li class="step" data-step="render"><span class="dot"></span><span>Rendering</span><span class="pct"></span><div class="bar"><div></div></div></li>
+    </ol>
+    <p class="hint" id="work-hint">Processing takes about a minute per 10 seconds of HD video.</p>
+  </section>
+
+  <!-- 3. Done -->
+  <section class="card" id="done" hidden>
+    <video id="result" controls playsinline preload="metadata"></video>
+    <div class="stats">
+      <div class="stat"><small>Crop</small><b id="stat-crop"></b></div>
+      <div class="stat"><small>Output size</small><b id="stat-size"></b></div>
+      <div class="stat"><small>Largest shake removed</small><b id="stat-shake"></b></div>
+      <div class="stat"><small>Frames</small><b id="stat-frames"></b></div>
+    </div>
+    <p class="note" id="stat-note" hidden></p>
+    <a class="button" id="download" download>Download stabilized video</a>
+    <button class="button secondary" data-reset>Stabilize another video</button>
+  </section>
+
+  <!-- Error -->
+  <section class="card" id="failed" hidden>
+    <div class="error"><b>Something went wrong</b><span id="error-text"></span></div>
+    <button class="button secondary" data-reset>Try again</button>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const sections = ["pick", "work", "done", "failed"];
+const show = (name) => sections.forEach((s) => ($(s).hidden = s !== name));
+const JOB_KEY = "minis-job";
+let file = null;
+let pollTimer = null;
+
+function storage(fn) {
+  try { return fn(window.localStorage); } catch { return null; }
+}
+
+function formatSize(bytes) {
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + " GB";
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + " MB";
+  return Math.max(1, Math.round(bytes / 1e3)) + " KB";
+}
+
+function stabilizedName(name) {
+  const stem = name.replace(/\.[^.]*$/, "") || "video";
+  return stem + "_stabilized.mp4";
+}
+
+// ---- Choosing a file ----
+function choose(f) {
+  if (!f) return;
+  if (f.type && !f.type.startsWith("video/")) {
+    fail("That file doesn't look like a video.");
+    return;
+  }
+  file = f;
+  $("chosen-name").textContent = f.name;
+  $("chosen-size").textContent = formatSize(f.size);
+  $("chosen").hidden = false;
+  $("start").disabled = false;
+}
+
+const drop = $("drop");
+drop.addEventListener("click", () => $("input").click());
+drop.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("input").click(); }
+});
+$("input").addEventListener("change", (e) => choose(e.target.files[0]));
+["dragenter", "dragover"].forEach((t) =>
+  document.addEventListener(t, (e) => { e.preventDefault(); if (!$("pick").hidden) drop.classList.add("over"); }));
+["dragleave", "drop"].forEach((t) =>
+  document.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+document.addEventListener("drop", (e) => {
+  if (!$("pick").hidden) choose(e.dataTransfer.files[0]);
+});
+
+$("threshold").addEventListener("input", (e) => ($("threshold-value").textContent = e.target.value + "%"));
+
+// ---- Progress display ----
+const order = ["upload", "analyze", "render"];
+function setStep(current, fraction) {
+  const index = order.indexOf(current);
+  document.querySelectorAll(".step").forEach((el) => {
+    const i = order.indexOf(el.dataset.step);
+    el.classList.toggle("done", i < index);
+    el.classList.toggle("active", i === index);
+    el.querySelector(".dot").textContent = i < index ? "✓" : "";
+    const pct = i < index ? 100 : i === index ? Math.round((fraction || 0) * 100) : 0;
+    el.querySelector(".bar div").style.width = pct + "%";
+    el.querySelector(".pct").textContent = i === index && fraction != null ? pct + "%" : "";
+  });
+}
+
+function startWork(name, size) {
+  $("work-name").textContent = name;
+  $("work-size").textContent = size ? formatSize(size) : "";
+  show("work");
+}
+
+// ---- Upload ----
+$("start").addEventListener("click", () => {
+  if (!file) return;
+  const form = new FormData();
+  form.append("threshold", $("threshold").value);
+  form.append("intent_frames", $("intent").value);
+  form.append("file", file);
+
+  startWork(file.name, file.size);
+  setStep("upload", 0);
+  $("work-hint").textContent = "Keep this tab open while the video uploads.";
+
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/jobs");
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) setStep("upload", e.loaded / e.total); };
+  xhr.onerror = () => fail("The upload failed. Is the minIS server still running?");
+  xhr.onload = () => {
+    let body = {};
+    try { body = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status !== 200) return fail(body.error || "Upload rejected (" + xhr.status + ").");
+    const job = { id: body.id, name: file.name, size: file.size };
+    storage((s) => s.setItem(JOB_KEY, JSON.stringify(job)));
+    follow(job);
+  };
+  xhr.send(form);
+});
+
+// ---- Following a job ----
+function follow(job) {
+  startWork(job.name, job.size);
+  setStep("analyze", null);
+  $("work-hint").textContent = "Processing takes about a minute per 10 seconds of HD video. You can close this tab and come back.";
+  clearTimeout(pollTimer);
+  const poll = async () => {
+    let status;
+    try {
+      const res = await fetch("/api/jobs/" + job.id);
+      if (res.status === 404) {
+        storage((s) => s.removeItem(JOB_KEY));
+        return fail("This job is no longer on the server (it may have been restarted).");
+      }
+      status = await res.json();
+    } catch {
+      pollTimer = setTimeout(poll, 3000);
+      return;
+    }
+    switch (status.state) {
+      case "queued": setStep("analyze", null); $("work-hint").textContent = "Waiting for another video to finish."; break;
+      case "analyzing": setStep("analyze", status.progress); break;
+      case "rendering": setStep("render", status.progress); break;
+      case "done": return finish(job, status.summary);
+      case "failed": storage((s) => s.removeItem(JOB_KEY)); return fail(status.error);
+    }
+    pollTimer = setTimeout(poll, 1000);
+  };
+  poll();
+}
+
+// ---- Result ----
+function finish(job, s) {
+  const url = "/api/jobs/" + job.id + "/video";
+  $("result").src = url;
+  $("download").href = url;
+  $("download").setAttribute("download", stabilizedName(job.name));
+  $("stat-crop").textContent = s.crop_percent_x.toFixed(1) + "% × " + s.crop_percent_y.toFixed(1) + "%";
+  $("stat-size").textContent = s.output_width + " × " + s.output_height;
+  $("stat-shake").textContent = Math.round(s.max_jitter_x) + " × " + Math.round(s.max_jitter_y) + " px";
+  $("stat-frames").textContent = s.frames.toLocaleString();
+
+  const notes = [];
+  const pans = Math.max(s.intentional_frames_x, s.intentional_frames_y);
+  if (pans > 0) notes.push(pans + " frames of intentional camera movement were kept.");
+  if (s.unreliable_frames / s.frames > 0.1) {
+    notes.push(Math.round((100 * s.unreliable_frames) / s.frames) +
+      "% of frames had nothing steady to measure (e.g. something passing close to the lens) and were estimated.");
+  }
+  $("stat-note").textContent = notes.join(" ");
+  $("stat-note").hidden = notes.length === 0;
+  show("done");
+}
+
+function fail(message) {
+  clearTimeout(pollTimer);
+  $("error-text").textContent = message;
+  show("failed");
+}
+
+document.querySelectorAll("[data-reset]").forEach((b) =>
+  b.addEventListener("click", () => {
+    clearTimeout(pollTimer);
+    storage((s) => s.removeItem(JOB_KEY));
+    $("result").removeAttribute("src");
+    file = null;
+    $("input").value = "";
+    $("chosen").hidden = true;
+    $("start").disabled = true;
+    show("pick");
+  }));
+
+// Resume a job started earlier in this browser.
+const saved = storage((s) => JSON.parse(s.getItem(JOB_KEY) || "null"));
+if (saved && saved.id) follow(saved);
+</script>
+</body>
+</html>

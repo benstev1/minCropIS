@@ -11,6 +11,9 @@ pub struct VideoInfo {
     pub height: usize,
     /// Frame rate as ffmpeg reports it, e.g. `30000/1001`.
     pub frame_rate: String,
+    /// Frame count from the container, or estimated from duration × frame rate.
+    /// Only used for progress reporting.
+    pub frame_count: Option<usize>,
 }
 
 pub fn probe(path: &Path) -> Result<VideoInfo> {
@@ -44,13 +47,23 @@ pub fn probe(path: &Path) -> Result<VideoInfo> {
     } else {
         (width, height)
     };
+    let frame_rate = stream["r_frame_rate"]
+        .as_str()
+        .context("bad frame rate from ffprobe")?
+        .to_string();
+    let number = |key: &str| stream[key].as_str().and_then(|v| v.parse::<f64>().ok());
+    let fps = frame_rate
+        .split_once('/')
+        .and_then(|(n, d)| Some(n.parse::<f64>().ok()? / d.parse::<f64>().ok()?));
+    let frame_count = number("nb_frames")
+        .or_else(|| Some(number("duration")? * fps?))
+        .map(|n| n.round() as usize)
+        .filter(|&n| n > 0);
     Ok(VideoInfo {
         width,
         height,
-        frame_rate: stream["r_frame_rate"]
-            .as_str()
-            .context("bad frame rate from ffprobe")?
-            .to_string(),
+        frame_rate,
+        frame_count,
     })
 }
 

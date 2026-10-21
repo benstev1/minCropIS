@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -32,23 +32,15 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    if !(args.threshold > 0.0 && args.threshold < 50.0) {
-        bail!("--threshold must be a percentage between 0 and 50");
-    }
-    if args.intent_frames == 0 {
-        bail!("--intent-frames must be at least 1");
-    }
-    if !(0.0..=1.0).contains(&args.recenter) {
-        bail!("--recenter must be between 0 and 1");
-    }
     let settings = minis::Settings {
         threshold_percent: args.threshold,
         intent_frames: args.intent_frames,
         recenter: args.recenter,
     };
+    settings.validate()?;
 
     eprintln!("analyzing {} ...", args.input.display());
-    let analysis = minis::analyze(&args.input, settings)?;
+    let analysis = minis::analyze(&args.input, settings, |_| {})?;
 
     if let Some(report) = &args.report {
         let file = std::fs::File::create(report)
@@ -57,7 +49,7 @@ fn main() -> Result<()> {
     }
 
     eprintln!("rendering {} ...", args.output.display());
-    minis::render(&args.input, &args.output, &analysis)?;
+    minis::render(&args.input, &args.output, &analysis, |_| {})?;
 
     let a = &analysis;
     let pct = |kept: usize, size: usize| 100.0 * (size - kept) as f64 / size as f64;

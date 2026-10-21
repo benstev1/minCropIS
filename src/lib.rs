@@ -28,6 +28,21 @@ pub struct Settings {
     pub recenter: f64,
 }
 
+impl Settings {
+    pub fn validate(&self) -> Result<()> {
+        if !(self.threshold_percent > 0.0 && self.threshold_percent < 50.0) {
+            bail!("threshold must be a percentage between 0 and 50");
+        }
+        if self.intent_frames == 0 {
+            bail!("intent frames must be at least 1");
+        }
+        if !(0.0..=1.0).contains(&self.recenter) {
+            bail!("recenter must be between 0 and 1");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct FrameReport {
     pub index: usize,
@@ -72,11 +87,17 @@ pub struct Analysis {
 }
 
 /// Pass 1: estimate motion, split jitter from intentional movement, and size the crop.
-pub fn analyze(input: &Path, settings: Settings) -> Result<Analysis> {
+/// `progress` is called with the number of frames analyzed so far.
+pub fn analyze(
+    input: &Path,
+    settings: Settings,
+    mut progress: impl FnMut(usize),
+) -> Result<Analysis> {
     let VideoInfo {
         width,
         height,
         frame_rate,
+        ..
     } = video::probe(input)?;
     let scale = (width.max(height) as f64 / ANALYSIS_MAX_DIM as f64).max(1.0);
     let aw = ((width as f64 / scale).round() as usize).max(16);
@@ -89,6 +110,7 @@ pub fn analyze(input: &Path, settings: Settings) -> Result<Analysis> {
     let mut positions = Vec::new();
     while decoder.read_frame(&mut gray)? {
         positions.push(tracker.track(&gray));
+        progress(positions.len());
     }
     decoder.finish()?;
     if positions.is_empty() {
@@ -164,17 +186,26 @@ fn count_labels(labels: impl Iterator<Item = Label>) -> LabelCounts {
 }
 
 /// Pass 2: shift each full-color frame by its jitter, crop, and encode.
-pub fn render(input: &Path, output: &Path, analysis: &Analysis) -> Result<()> {
+/// `progress` is called with the number of frames rendered so far.
+pub fn render(
+    input: &Path,
+    output: &Path,
+    analysis: &Analysis,
+    mut progress: impl FnMut(usize),
+) -> Result<()> {
     let (w, h, crop) = (analysis.width, analysis.height, analysis.crop);
     let mut decoder = Decoder::open(input, PixelFormat::Rgb24, w, h)?;
     let mut encoder =
         Encoder::create(output, crop.width, crop.height, &analysis.frame_rate, input)?;
     let (mut rgb, mut out) = (Vec::new(), Vec::new());
     let mut frames = analysis.frames.iter();
+    let mut done = 0;
     while decoder.read_frame(&mut rgb)? {
         let Some(frame) = frames.next() else { break };
         render::shift_and_crop(&rgb, w, h, crop, frame.x.jitter, frame.y.jitter, &mut out);
         encoder.write_frame(&out)?;
+        done += 1;
+        progress(done);
     }
     encoder.finish()?;
     decoder.finish()
