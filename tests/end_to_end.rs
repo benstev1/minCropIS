@@ -172,6 +172,25 @@ fn output_size(video: &Path) -> (u64, u64, u64) {
     (v[0], v[1], v[2])
 }
 
+/// Names of the top-level boxes of an MP4 file, in order.
+fn top_level_atoms(path: &Path) -> Vec<String> {
+    let data = std::fs::read(path).unwrap();
+    let mut atoms = Vec::new();
+    let mut pos = 0;
+    while pos + 8 <= data.len() {
+        let mut size = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+        atoms.push(String::from_utf8_lossy(&data[pos + 4..pos + 8]).into_owned());
+        if size == 1 {
+            size = u64::from_be_bytes(data[pos + 8..pos + 16].try_into().unwrap()) as usize;
+        }
+        if size == 0 {
+            break;
+        }
+        pos += size;
+    }
+    atoms
+}
+
 fn shake(t: usize) -> (f64, f64) {
     let t = t as f64;
     (
@@ -214,6 +233,11 @@ fn shake_within_threshold_is_removed_with_minimal_crop() {
             FRAMES as u64
         )
     );
+
+    // The index comes before the video data, so players can start streaming right away.
+    let atoms = top_level_atoms(&output);
+    let position = |name: &str| atoms.iter().position(|a| a == name).unwrap();
+    assert!(position("moov") < position("mdat"), "{atoms:?}");
 
     // Re-analyzing the stabilized output finds almost no remaining motion.
     let residual = stabilize(&output, "5", &[]);

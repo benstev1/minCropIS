@@ -5,8 +5,8 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, State},
-    http::{StatusCode, header},
+    extract::{DefaultBodyLimit, Multipart, Path, Request, State},
+    http::{HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
@@ -18,7 +18,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
-use tokio_util::io::ReaderStream;
+use tower::ServiceExt;
+use tower_http::services::ServeFile;
 
 const INDEX: &str = include_str!("../../web/index.html");
 
@@ -305,8 +306,12 @@ async fn job_status(State(app): State<Shared>, Path(id): Path<String>) -> Respon
 }
 
 /// The stabilized video, inline so the page can preview it; the page's download
-/// link names the file.
-async fn job_video(State(app): State<Shared>, Path(id): Path<String>) -> Response {
+/// link names the file. Served with HTTP range support so the player can stream and seek.
+async fn job_video(
+    State(app): State<Shared>,
+    Path(id): Path<String>,
+    request: Request,
+) -> Response {
     let (path, name) = match app.jobs.lock().unwrap().get(&id) {
         Some(Job {
             status: Status::Done { .. },
@@ -316,23 +321,13 @@ async fn job_video(State(app): State<Shared>, Path(id): Path<String>) -> Respons
         Some(_) => return (StatusCode::CONFLICT, "not finished yet").into_response(),
         None => return (StatusCode::NOT_FOUND, "no such job").into_response(),
     };
-    let file = match tokio::fs::File::open(&path).await {
-        Ok(file) => file,
-        Err(e) => return server_error(e),
-    };
-    let length = file.metadata().await.map(|m| m.len()).ok();
-    let mut response = Response::builder()
-        .header(header::CONTENT_TYPE, "video/mp4")
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("inline; filename=\"{name}\""),
-        );
-    if let Some(length) = length {
-        response = response.header(header::CONTENT_LENGTH, length);
+    let Ok(mut response) = ServeFile::new(path).oneshot(request).await;
+    if let Ok(value) = HeaderValue::from_str(&format!("inline; filename=\"{name}\"")) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_DISPOSITION, value);
     }
-    response
-        .body(Body::from_stream(ReaderStream::new(file)))
-        .unwrap_or_else(server_error)
+    response.map(Body::new)
 }
 
 /// Extension of the uploaded file name, limited to a few alphanumerics so it is

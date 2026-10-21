@@ -184,6 +184,9 @@ impl Encoder {
                 "-pix_fmt",
                 "yuv420p",
                 "-shortest",
+                // Put the index at the front so players can start before the whole file arrives.
+                "-movflags",
+                "+faststart",
             ])
             .arg(path)
             .stdin(Stdio::piped())
