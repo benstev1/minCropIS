@@ -1,3 +1,7 @@
 /target
 *.mp4
 *.mkv
+*.MP4
+*.MOV
+*.mov
+report*.json

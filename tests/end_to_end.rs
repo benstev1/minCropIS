@@ -292,3 +292,54 @@ fn independently_moving_region_does_not_add_shake() {
     let ry = residual["max_jitter_y"].as_f64().unwrap();
     assert!(rx < 0.5 && ry < 0.5, "residual jitter {rx}, {ry}");
 }
+
+#[test]
+fn rotated_phone_clip_is_processed_upright() {
+    // Phones store portrait video sideways plus a rotation flag that ffmpeg applies on decode.
+    let landscape = make_clip("rotated_src", shake);
+    let encoded = landscape.with_file_name("rotated_src.mp4");
+    let rotated = landscape.with_file_name("rotated.mp4");
+    // Encode first, then add the flag on a stream copy: ffmpeg 4.4 drops it when re-encoding.
+    for (input, output, args) in [
+        (
+            &landscape,
+            &encoded,
+            ["-c:v", "libx264", "-qp", "0"].as_slice(),
+        ),
+        (
+            &encoded,
+            &rotated,
+            ["-c", "copy", "-metadata:s:v:0", "rotate=90"].as_slice(),
+        ),
+    ] {
+        let status = Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-i"])
+            .arg(input)
+            .args(args)
+            .arg(output)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    let report = stabilize(&rotated, "5", &[]);
+    assert_eq!(
+        (report["width"].as_u64(), report["height"].as_u64()),
+        (Some(H as u64), Some(W as u64))
+    );
+    // A quarter turn swaps the axes the shake shows up on.
+    let true_max_x = (0..FRAMES).map(|t| shake(t).1.abs()).fold(0.0, f64::max);
+    let mx = report["max_jitter_x"].as_f64().unwrap();
+    assert!(
+        (mx - true_max_x).abs() < 0.5,
+        "max jitter x {mx} vs {true_max_x}"
+    );
+
+    let crop = &report["crop"];
+    let (w, h, _) = output_size(&rotated.with_extension("out.mp4"));
+    assert_eq!(
+        (Some(w), Some(h)),
+        (crop["width"].as_u64(), crop["height"].as_u64())
+    );
+    assert!(h > w);
+}

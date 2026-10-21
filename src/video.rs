@@ -15,9 +15,8 @@ pub struct VideoInfo {
 
 pub fn probe(path: &Path) -> Result<VideoInfo> {
     let out = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "v:0"])
-        .args(["-show_entries", "stream=width,height,r_frame_rate"])
-        .args(["-of", "csv=p=0"])
+        .args(["-v", "error", "-select_streams", "v:0", "-show_streams"])
+        .args(["-of", "json"])
         .arg(path)
         .output()
         .context("failed to run ffprobe (is ffmpeg installed?)")?;
@@ -27,16 +26,46 @@ pub fn probe(path: &Path) -> Result<VideoInfo> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let fields: Vec<&str> = text.trim().split(',').collect();
-    if fields.len() < 3 {
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).context("bad JSON from ffprobe")?;
+    let Some(stream) = json["streams"].get(0) else {
         bail!("no video stream found in {}", path.display());
-    }
+    };
+    let dimension = |key: &str| -> Result<usize> {
+        Ok(stream[key]
+            .as_u64()
+            .with_context(|| format!("bad {key} from ffprobe"))? as usize)
+    };
+    let (width, height) = (dimension("width")?, dimension("height")?);
+    // ffmpeg applies rotation metadata when decoding, so frames arrive upright:
+    // a quarter turn swaps the dimensions we decode at.
+    let (width, height) = if rotation(stream).rem_euclid(180) == 90 {
+        (height, width)
+    } else {
+        (width, height)
+    };
     Ok(VideoInfo {
-        width: fields[0].parse().context("bad width from ffprobe")?,
-        height: fields[1].parse().context("bad height from ffprobe")?,
-        frame_rate: fields[2].to_string(),
+        width,
+        height,
+        frame_rate: stream["r_frame_rate"]
+            .as_str()
+            .context("bad frame rate from ffprobe")?
+            .to_string(),
     })
+}
+
+/// Display rotation in degrees, from the legacy `rotate` tag or the display matrix
+/// side data used by newer ffmpeg versions.
+fn rotation(stream: &serde_json::Value) -> i64 {
+    let tag = stream["tags"]["rotate"]
+        .as_str()
+        .and_then(|r| r.parse::<i64>().ok());
+    let side_data = stream["side_data_list"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|d| d["rotation"].as_i64());
+    tag.or(side_data).unwrap_or(0)
 }
 
 #[derive(Clone, Copy)]
