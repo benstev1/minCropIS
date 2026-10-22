@@ -3,36 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>minIS Stabilizer</title>
+<title>Bens Super Cool Image Stabilizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
 <style>
+  /* Palette: cream #FCF1D0, blue #22396F, navy #0D1C42, midnight #010736. */
   :root {
-    --bg: #f6f7f9;
-    --card: #ffffff;
-    --text: #1d2330;
-    --muted: #667085;
-    --border: #d9dee7;
-    --accent: #2f6fed;
-    --accent-text: #ffffff;
-    --accent-soft: #e8effd;
-    --track: #e7eaf0;
-    --danger: #c4321c;
-    --danger-soft: #fdecea;
+    color-scheme: dark;
+    --bg: #010736;
+    --card: #0D1C42;
+    --text: #FCF1D0;
+    --muted: rgba(252, 241, 208, 0.68);
+    --border: #22396F;
+    --accent: #FCF1D0;
+    --accent-text: #010736;
+    --accent-soft: #22396F;
+    --track: #22396F;
+    --danger: #ffb4a3;
+    --danger-soft: #3b1a2a;
     --radius: 14px;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #111318;
-      --card: #1a1d24;
-      --text: #e8eaef;
-      --muted: #9aa3b2;
-      --border: #2e333d;
-      --accent: #6d9bff;
-      --accent-text: #0d1424;
-      --accent-soft: #1d2a45;
-      --track: #2a2f39;
-      --danger: #ff8a75;
-      --danger-soft: #3a1f1b;
-    }
+    --font: "Courier Prime", "Courier New", Courier, monospace;
   }
   * { box-sizing: border-box; }
   body {
@@ -40,7 +31,7 @@
     min-height: 100vh;
     background: var(--bg);
     color: var(--text);
-    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font: 16px/1.55 var(--font);
     display: flex;
     justify-content: center;
     padding: 48px 16px;
@@ -48,8 +39,11 @@
   main { width: 100%; max-width: 560px; transition: max-width .2s; }
   body.wide main { max-width: 1200px; }
   header { margin-bottom: 24px; }
-  h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: -0.01em; }
-  h2 { font-size: 1.05rem; margin: 0 0 4px; }
+  /* Headings set like screenplay scene headings. */
+  h1 { font-size: 1.7rem; margin: 0 0 6px; text-transform: uppercase; letter-spacing: .04em; line-height: 1.2; }
+  h2 { font-size: 1rem; margin: 0 0 4px; text-transform: uppercase; letter-spacing: .08em; }
+  button, input { font-family: var(--font); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   header p { margin: 0; color: var(--muted); }
   .card {
     background: var(--card);
@@ -95,11 +89,10 @@
   .file b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file span { color: var(--muted); white-space: nowrap; }
 
-  details { margin-top: 18px; }
-  summary { cursor: pointer; color: var(--muted); font-size: .95rem; }
+  .upload-settings { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
   .setting { margin-top: 14px; }
   .setting label { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-weight: 600; font-size: .95rem; }
-  .setting output { font-variant-numeric: tabular-nums; color: var(--accent); }
+  .setting output { font-variant-numeric: tabular-nums; font-weight: 700; }
   .setting p { margin: 2px 0 0; color: var(--muted); font-size: .85rem; }
   input[type=range] { width: 100%; accent-color: var(--accent); margin-top: 6px; }
   input[type=number] {
@@ -163,7 +156,7 @@
     max-height: 70vh;
     aspect-ratio: var(--aspect, 16 / 9);
     object-fit: contain;
-    background: #000;
+    background: var(--bg);
     border-radius: 10px;
     display: block;
     cursor: pointer;
@@ -213,7 +206,7 @@
 <body>
 <main>
   <header>
-    <h1>minIS</h1>
+    <h1>Bens Super Cool Image Stabilizer</h1>
     <p>Removes camera shake with the smallest possible crop.</p>
   </header>
 
@@ -229,10 +222,10 @@
     <input type="file" id="input" accept="video/*" hidden>
     <div class="file" id="chosen" hidden><b id="chosen-name"></b><span id="chosen-size"></span></div>
 
-    <details>
-      <summary>Settings</summary>
+    <div class="upload-settings">
+      <h2>Settings</h2>
       <div class="settings" data-settings></div>
-    </details>
+    </div>
 
     <button class="button" id="start" disabled>Stabilize</button>
   </section>
