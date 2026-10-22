@@ -3,13 +3,25 @@ name = "minis"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = [".", "desktop"]
+
+[features]
+default = ["web"]
+# The local web app (minis-web, and the server inside the desktop app).
+web = ["dep:axum", "dep:tokio", "dep:tower", "dep:tower-http"]
+
+[[bin]]
+name = "minis-web"
+required-features = ["web"]
+
 [dependencies]
 anyhow = "1.0.104"
-axum = { version = "0.8.9", features = ["multipart"] }
+axum = { version = "0.8.9", optional = true, features = ["multipart"] }
 clap = { version = "4.6.7", features = ["derive"] }
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "net"] }
-tower = { version = "0.5.3", features = ["util"] }
-tower-http = { version = "0.7.1", features = ["fs"] }
+tokio = { version = "1.54.1", optional = true, features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "net"] }
+tower = { version = "0.5.3", optional = true, features = ["util"] }
+tower-http = { version = "0.7.1", optional = true, features = ["fs"] }

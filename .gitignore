@@ -5,3 +5,5 @@
 *.MOV
 *.mov
 report*.json
+# Windows ffmpeg build bundled into the desktop app (fetched by build-windows.sh)
+/desktop/ffmpeg/

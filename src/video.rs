@@ -2,8 +2,36 @@
 
 use anyhow::{Context, Result, bail};
 use std::io::{BufReader, BufWriter, ErrorKind, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::OnceLock;
+
+static TOOL_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Use `ffmpeg` / `ffprobe` from `dir` instead of looking them up on `PATH`,
+/// e.g. the copies bundled with the desktop app. Only the first call has effect.
+pub fn set_tool_dir(dir: PathBuf) {
+    let _ = TOOL_DIR.set(dir);
+}
+
+/// A command for an ffmpeg tool. On Windows it runs without opening a console window.
+fn tool(name: &str) -> Command {
+    let program = match TOOL_DIR.get() {
+        Some(dir) => dir
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+            .into_os_string(),
+        None => name.into(),
+    };
+    #[allow(unused_mut)]
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
 
 #[derive(Debug, Clone)]
 pub struct VideoInfo {
@@ -19,7 +47,7 @@ pub struct VideoInfo {
 }
 
 pub fn probe(path: &Path) -> Result<VideoInfo> {
-    let out = Command::new("ffprobe")
+    let out = tool("ffprobe")
         .args(["-v", "error", "-select_streams", "v:0", "-show_streams"])
         .args(["-of", "json"])
         .arg(path)
@@ -117,7 +145,7 @@ pub struct Decoder {
 
 impl Decoder {
     pub fn open(path: &Path, format: PixelFormat, width: usize, height: usize) -> Result<Self> {
-        let mut child = Command::new("ffmpeg")
+        let mut child = tool("ffmpeg")
             .args(["-v", "error", "-nostdin", "-i"])
             .arg(path)
             // Every decoded frame exactly once: no duplicates or drops for
@@ -170,7 +198,7 @@ impl Encoder {
         frame_rate: &str,
         audio_source: &Path,
     ) -> Result<Self> {
-        let mut child = Command::new("ffmpeg")
+        let mut child = tool("ffmpeg")
             .args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24"])
             .args([
                 "-s",
@@ -223,7 +251,7 @@ impl Encoder {
 /// no audio. Used to show the original next to the result, since uploads may be
 /// in formats browsers can't play (e.g. HEVC .MOV).
 pub fn browser_preview(input: &Path, output: &Path) -> Result<()> {
-    let out = Command::new("ffmpeg")
+    let out = tool("ffmpeg")
         .args(["-v", "error", "-nostdin", "-y", "-i"])
         .arg(input)
         .args([

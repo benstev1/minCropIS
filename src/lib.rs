@@ -7,6 +7,8 @@ pub mod outliers;
 pub mod path;
 pub mod render;
 pub mod video;
+#[cfg(feature = "web")]
+pub mod web;
 
 use anyhow::{Result, bail};
 use serde::Serialize;

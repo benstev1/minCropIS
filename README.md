@@ -38,6 +38,25 @@ result and download it. Jobs run one at a time, and the page picks a job back up
 reload it. Uploads and results are kept in the system temp folder (`/tmp/minis-web`), or
 in `--data-dir`. Use `--addr` to listen on another address or port.
 
+## Desktop app (Windows)
+
+The same app in its own window, with ffmpeg bundled: a Tauri wrapper in [desktop/](desktop/)
+that runs the web app's server inside the app and shows its page.
+
+To build the installer from WSL, first install Rust on Windows from <https://rustup.rs>
+(the Visual Studio C++ build tools are also needed). Then run:
+
+```bash
+desktop/build-windows.sh
+```
+
+The script copies the sources to `%USERPROFILE%\minis-build` and builds there. The first
+time, it also installs the Tauri CLI on Windows and downloads a Windows ffmpeg build from
+gyan.dev. It prints the path of the installer. Running the installer adds the app to the
+Start menu and the desktop.
+
+The icon is drawn by `desktop/icons/make_icons.py`.
+
 ## Tests
 
 ```bash
