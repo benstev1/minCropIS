@@ -5,6 +5,7 @@ use std::io::{BufReader, BufWriter, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::OnceLock;
+use std::thread::JoinHandle;
 
 static TOOL_DIR: OnceLock<PathBuf> = OnceLock::new();
 
@@ -12,6 +13,45 @@ static TOOL_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// e.g. the copies bundled with the desktop app. Only the first call has effect.
 pub fn set_tool_dir(dir: PathBuf) {
     let _ = TOOL_DIR.set(dir);
+}
+
+/// ffmpeg's option for passing every decoded frame through exactly once:
+/// `-fps_mode` since ffmpeg 5.1, `-vsync` before that (removed in later versions).
+/// Detected once from the ffmpeg in use.
+fn passthrough_frames() -> [&'static str; 2] {
+    static OPTION: OnceLock<&'static str> = OnceLock::new();
+    let option = OPTION.get_or_init(|| {
+        let help = tool("ffmpeg").args(["-hide_banner", "-h", "full"]).output();
+        match help {
+            Ok(out) if String::from_utf8_lossy(&out.stdout).contains("-fps_mode") => "-fps_mode",
+            _ => "-vsync",
+        }
+    });
+    [option, "passthrough"]
+}
+
+/// Collects a child's stderr on a background thread, so a failure can report
+/// ffmpeg's own message (a desktop app has no console to show it on).
+fn collect_stderr(child: &mut Child) -> Option<JoinHandle<String>> {
+    let mut stderr = child.stderr.take()?;
+    Some(std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = stderr.read_to_end(&mut bytes);
+        String::from_utf8_lossy(&bytes).trim().to_string()
+    }))
+}
+
+/// Waits for an ffmpeg child and turns a failure into an error with its message.
+fn wait_for(mut child: Child, stderr: Option<JoinHandle<String>>, what: &str) -> Result<()> {
+    let status = child.wait()?;
+    let message = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
+    if !status.success() {
+        if message.is_empty() {
+            bail!("ffmpeg {what} failed ({status})");
+        }
+        bail!("ffmpeg {what} failed: {message}");
+    }
+    Ok(())
 }
 
 /// A command for an ffmpeg tool. On Windows it runs without opening a console window.
@@ -139,6 +179,7 @@ impl PixelFormat {
 /// Streams decoded frames out of ffmpeg, optionally scaled to `width` x `height`.
 pub struct Decoder {
     child: Child,
+    stderr: Option<JoinHandle<String>>,
     stdout: BufReader<ChildStdout>,
     frame_bytes: usize,
 }
@@ -150,15 +191,20 @@ impl Decoder {
             .arg(path)
             // Every decoded frame exactly once: no duplicates or drops for
             // variable-frame-rate input, so passes and previews line up.
-            .args(["-map", "0:v:0", "-vsync", "passthrough", "-vf"])
+            .args(["-map", "0:v:0"])
+            .args(passthrough_frames())
+            .arg("-vf")
             .arg(format!("scale={width}:{height}:flags=area"))
             .args(["-f", "rawvideo", "-pix_fmt", format.ffmpeg_name(), "-"])
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .context("failed to start ffmpeg decoder")?;
         let stdout = BufReader::new(child.stdout.take().unwrap());
+        let stderr = collect_stderr(&mut child);
         Ok(Self {
             child,
+            stderr,
             stdout,
             frame_bytes: width * height * format.channels(),
         })
@@ -174,19 +220,16 @@ impl Decoder {
         }
     }
 
-    pub fn finish(mut self) -> Result<()> {
+    pub fn finish(self) -> Result<()> {
         drop(self.stdout);
-        let status = self.child.wait()?;
-        if !status.success() {
-            bail!("ffmpeg decoder exited with {status}");
-        }
-        Ok(())
+        wait_for(self.child, self.stderr, "decoder")
     }
 }
 
 /// Encodes raw RGB frames to H.264, copying audio from `audio_source` when present.
 pub struct Encoder {
     child: Child,
+    stderr: Option<JoinHandle<String>>,
     stdin: BufWriter<ChildStdin>,
 }
 
@@ -224,10 +267,16 @@ impl Encoder {
             ])
             .arg(path)
             .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .context("failed to start ffmpeg encoder")?;
         let stdin = BufWriter::new(child.stdin.take().unwrap());
-        Ok(Self { child, stdin })
+        let stderr = collect_stderr(&mut child);
+        Ok(Self {
+            child,
+            stderr,
+            stdin,
+        })
     }
 
     pub fn write_frame(&mut self, rgb: &[u8]) -> Result<()> {
@@ -237,13 +286,13 @@ impl Encoder {
     }
 
     pub fn finish(self) -> Result<()> {
-        let Self { mut child, stdin } = self;
+        let Self {
+            child,
+            stderr,
+            stdin,
+        } = self;
         stdin.into_inner().map_err(|e| e.into_error())?;
-        let status = child.wait()?;
-        if !status.success() {
-            bail!("ffmpeg encoder exited with {status}");
-        }
-        Ok(())
+        wait_for(child, stderr, "encoder")
     }
 }
 
@@ -258,11 +307,10 @@ pub fn browser_preview(input: &Path, output: &Path) -> Result<()> {
             "-map",
             "0:v:0",
             "-an",
-            "-vsync",
-            "passthrough",
             "-vf",
             "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         ])
+        .args(passthrough_frames())
         .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"])
         .args(["-pix_fmt", "yuv420p", "-movflags", "+faststart"])
         .arg(output)
