@@ -367,3 +367,24 @@ fn rotated_phone_clip_is_processed_upright() {
     );
     assert!(h > w);
 }
+
+#[test]
+fn clip_with_audio_keeps_every_frame() {
+    // With audio copied through, the encoder must not stop early and drop the
+    // frames still buffered in x264's lookahead.
+    let silent = make_clip("audio_src", shake);
+    let clip = silent.with_file_name("audio.mkv");
+    let status = Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-i"])
+        .arg(&silent)
+        .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=2"])
+        .args(["-c:v", "copy", "-c:a", "aac"])
+        .arg(&clip)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    stabilize(&clip, "5", &[]);
+    let (_, _, frames) = output_size(&clip.with_extension("out.mp4"));
+    assert_eq!(frames, FRAMES as u64);
+}

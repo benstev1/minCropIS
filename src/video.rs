@@ -9,7 +9,9 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 pub struct VideoInfo {
     pub width: usize,
     pub height: usize,
-    /// Frame rate as ffmpeg reports it, e.g. `30000/1001`.
+    /// Average frame rate as ffmpeg reports it, e.g. `30000/1001`. Output is
+    /// written at this constant rate, so it lasts as long as the input even when
+    /// the input has a variable frame rate (common for phone footage).
     pub frame_rate: String,
     /// Frame count from the container, or estimated from duration × frame rate.
     /// Only used for progress reporting.
@@ -47,16 +49,19 @@ pub fn probe(path: &Path) -> Result<VideoInfo> {
     } else {
         (width, height)
     };
-    let frame_rate = stream["r_frame_rate"]
-        .as_str()
-        .context("bad frame rate from ffprobe")?
-        .to_string();
+    let rate = |key: &str| {
+        let text = stream[key].as_str()?;
+        let (n, d) = text.split_once('/')?;
+        let fps = n.parse::<f64>().ok()? / d.parse::<f64>().ok()?;
+        (fps.is_finite() && fps > 0.0).then(|| (text.to_string(), fps))
+    };
+    // avg_frame_rate is 0/0 when unknown; r_frame_rate is the nominal rate.
+    let (frame_rate, fps) = rate("avg_frame_rate")
+        .or_else(|| rate("r_frame_rate"))
+        .context("bad frame rate from ffprobe")?;
     let number = |key: &str| stream[key].as_str().and_then(|v| v.parse::<f64>().ok());
-    let fps = frame_rate
-        .split_once('/')
-        .and_then(|(n, d)| Some(n.parse::<f64>().ok()? / d.parse::<f64>().ok()?));
     let frame_count = number("nb_frames")
-        .or_else(|| Some(number("duration")? * fps?))
+        .or_else(|| Some(number("duration")? * fps))
         .map(|n| n.round() as usize)
         .filter(|&n| n > 0);
     Ok(VideoInfo {
@@ -115,7 +120,9 @@ impl Decoder {
         let mut child = Command::new("ffmpeg")
             .args(["-v", "error", "-nostdin", "-i"])
             .arg(path)
-            .args(["-map", "0:v:0", "-vf"])
+            // Every decoded frame exactly once: no duplicates or drops for
+            // variable-frame-rate input, so passes and previews line up.
+            .args(["-map", "0:v:0", "-vsync", "passthrough", "-vf"])
             .arg(format!("scale={width}:{height}:flags=area"))
             .args(["-f", "rawvideo", "-pix_fmt", format.ffmpeg_name(), "-"])
             .stdout(Stdio::piped())
@@ -183,7 +190,6 @@ impl Encoder {
                 "18",
                 "-pix_fmt",
                 "yuv420p",
-                "-shortest",
                 // Put the index at the front so players can start before the whole file arrives.
                 "-movflags",
                 "+faststart",
@@ -224,6 +230,8 @@ pub fn browser_preview(input: &Path, output: &Path) -> Result<()> {
             "-map",
             "0:v:0",
             "-an",
+            "-vsync",
+            "passthrough",
             "-vf",
             "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         ])
