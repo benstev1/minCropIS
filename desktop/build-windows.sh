@@ -34,7 +34,7 @@ win() {
 # 2. Tauri's build tool (one-time, takes a few minutes to compile).
 if [[ ! -e "$cargo_bin/cargo-tauri.exe" ]]; then
     echo "==> Installing the Tauri CLI on Windows (one-time)"
-    win "$build" cargo install tauri-cli@2 --locked
+    win "$build" cargo install tauri-cli@~2 --locked
 fi
 
 # 3. Windows ffmpeg to bundle with the app.
