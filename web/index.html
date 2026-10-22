@@ -45,9 +45,11 @@
     justify-content: center;
     padding: 48px 16px;
   }
-  main { width: 100%; max-width: 560px; }
+  main { width: 100%; max-width: 560px; transition: max-width .2s; }
+  body.wide main { max-width: 1200px; }
   header { margin-bottom: 24px; }
   h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.05rem; margin: 0 0 4px; }
   header p { margin: 0; color: var(--muted); }
   .card {
     background: var(--card);
@@ -55,6 +57,7 @@
     border-radius: var(--radius);
     padding: 24px;
   }
+  .card + .card { margin-top: 16px; }
   [hidden] { display: none !important; }
 
   .drop {
@@ -88,14 +91,15 @@
     border-radius: 10px;
     font-size: .95rem;
   }
+  #work .file { margin-top: 0; }
   .file b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file span { color: var(--muted); white-space: nowrap; }
 
   details { margin-top: 18px; }
   summary { cursor: pointer; color: var(--muted); font-size: .95rem; }
   .setting { margin-top: 14px; }
-  .setting label { display: flex; justify-content: space-between; font-weight: 600; font-size: .95rem; }
-  .setting output, .setting .value { font-variant-numeric: tabular-nums; color: var(--accent); }
+  .setting label { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-weight: 600; font-size: .95rem; }
+  .setting output { font-variant-numeric: tabular-nums; color: var(--accent); }
   .setting p { margin: 2px 0 0; color: var(--muted); font-size: .85rem; }
   input[type=range] { width: 100%; accent-color: var(--accent); margin-top: 6px; }
   input[type=number] {
@@ -149,16 +153,56 @@
   .bar div { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
   .hint { margin: 18px 0 0; color: var(--muted); font-size: .85rem; }
 
-  video { width: 100%; max-height: 60vh; border-radius: 10px; background: #000; display: block; }
-  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 16px; }
+  /* Side-by-side player */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .compare.single { grid-template-columns: 1fr; }
+  .compare figure { margin: 0; min-width: 0; }
+  .compare figcaption { font-size: .85rem; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+  .compare video {
+    width: 100%;
+    max-height: 70vh;
+    aspect-ratio: var(--aspect, 16 / 9);
+    object-fit: contain;
+    background: #000;
+    border-radius: 10px;
+    display: block;
+    cursor: pointer;
+  }
+  .controls { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+  .controls button {
+    flex: none;
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: 0;
+    background: var(--accent);
+    color: var(--accent-text);
+    display: grid; place-items: center;
+    cursor: pointer;
+  }
+  .controls button svg { width: 18px; height: 18px; }
+  .controls input[type=range] { margin: 0; flex: 1; min-width: 0; }
+  .controls .time { font-variant-numeric: tabular-nums; font-size: .9rem; color: var(--muted); white-space: nowrap; }
+  .controls .mute { background: transparent; color: var(--text); border: 1px solid var(--border); }
+
+  .results { display: grid; grid-template-columns: 1fr 340px; gap: 16px; margin-top: 16px; align-items: start; }
+  .results .card + .card { margin-top: 0; }
+  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 12px; }
   .stat { padding: 12px; border: 1px solid var(--border); border-radius: 10px; }
   .stat small { display: block; color: var(--muted); font-size: .8rem; }
   .stat b { font-size: 1.1rem; font-variant-numeric: tabular-nums; }
-  .note { margin: 14px 0 0; color: var(--muted); font-size: .9rem; }
+  .note { margin: 12px 0 0; color: var(--muted); font-size: .9rem; }
+  .side > .card + .card { margin-top: 16px; }
+  .rerun .button { margin-top: 16px; }
 
   .error { background: var(--danger-soft); color: var(--danger); padding: 14px; border-radius: 10px; overflow-wrap: anywhere; }
   .error b { display: block; margin-bottom: 4px; }
 
+  @media (max-width: 860px) {
+    .results { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    .compare.landscape { grid-template-columns: 1fr; }
+  }
   @media (max-width: 420px) {
     body { padding-top: 24px; }
     .card { padding: 18px; }
@@ -187,15 +231,7 @@
 
     <details>
       <summary>Settings</summary>
-      <div class="setting">
-        <label for="threshold">Shake threshold <output id="threshold-value">2%</output></label>
-        <input type="range" id="threshold" min="0.5" max="10" step="0.5" value="2">
-        <p>Movement up to this share of the frame counts as shake and is removed. The crop only grows as far as the shake actually goes.</p>
-      </div>
-      <div class="setting">
-        <label for="intent">Frames before movement counts as intentional <input type="number" id="intent" min="1" max="60" value="5"></label>
-        <p>Movement past the threshold that lasts this long is kept as a pan or tilt. Shorter jolts are smoothed.</p>
-      </div>
+      <div class="settings" data-settings></div>
     </details>
 
     <button class="button" id="start" disabled>Stabilize</button>
@@ -209,21 +245,52 @@
       <li class="step" data-step="analyze"><span class="dot"></span><span>Measuring shake</span><span class="pct"></span><div class="bar"><div></div></div></li>
       <li class="step" data-step="render"><span class="dot"></span><span>Rendering</span><span class="pct"></span><div class="bar"><div></div></div></li>
     </ol>
-    <p class="hint" id="work-hint">Processing takes about a minute per 10 seconds of HD video.</p>
+    <p class="hint" id="work-hint"></p>
   </section>
 
   <!-- 3. Done -->
-  <section class="card" id="done" hidden>
-    <video id="result" controls playsinline preload="metadata"></video>
-    <div class="stats">
-      <div class="stat"><small>Crop</small><b id="stat-crop"></b></div>
-      <div class="stat"><small>Output size</small><b id="stat-size"></b></div>
-      <div class="stat"><small>Largest shake removed</small><b id="stat-shake"></b></div>
-      <div class="stat"><small>Frames</small><b id="stat-frames"></b></div>
+  <section id="done" hidden>
+    <div class="card">
+      <div class="compare" id="compare">
+        <figure id="original-figure">
+          <figcaption>Original</figcaption>
+          <video id="original" muted playsinline preload="auto"></video>
+        </figure>
+        <figure>
+          <figcaption>Stabilized</figcaption>
+          <video id="result" playsinline preload="auto"></video>
+        </figure>
+      </div>
+      <div class="controls">
+        <button id="play" aria-label="Play"></button>
+        <input type="range" id="seek" min="0" max="1000" step="1" value="0" aria-label="Seek">
+        <span class="time" id="time">0:00 / 0:00</span>
+        <button class="mute" id="mute" aria-label="Mute"></button>
+      </div>
+      <p class="note" id="original-missing" hidden>The original couldn't be prepared for side-by-side viewing, so only the result is shown.</p>
     </div>
-    <p class="note" id="stat-note" hidden></p>
-    <a class="button" id="download" download>Download stabilized video</a>
-    <button class="button secondary" data-reset>Stabilize another video</button>
+
+    <div class="results">
+      <div class="card">
+        <h2>Result</h2>
+        <div class="stats">
+          <div class="stat"><small>Crop</small><b id="stat-crop"></b></div>
+          <div class="stat"><small>Output size</small><b id="stat-size"></b></div>
+          <div class="stat"><small>Largest shake removed</small><b id="stat-shake"></b></div>
+          <div class="stat"><small>Frames</small><b id="stat-frames"></b></div>
+        </div>
+        <p class="note" id="stat-note" hidden></p>
+        <p class="note" id="stat-previous" hidden></p>
+        <a class="button" id="download" download>Download stabilized video</a>
+        <button class="button secondary" data-reset>Stabilize another video</button>
+      </div>
+      <div class="card rerun">
+        <h2>Adjust &amp; rerun</h2>
+        <p class="note" style="margin-top:0">Try other settings on the same video. No new upload needed, and the shake measurement is reused, so only rendering runs again.</p>
+        <div class="settings" data-settings></div>
+        <button class="button" id="rerun">Rerun with these settings</button>
+      </div>
+    </div>
   </section>
 
   <!-- Error -->
@@ -233,13 +300,38 @@
   </section>
 </main>
 
+<template id="settings-template">
+  <div class="setting">
+    <label>Shake threshold <output data-threshold-value>2%</output></label>
+    <input type="range" data-threshold min="0.5" max="10" step="0.5" value="2" aria-label="Shake threshold (% of frame)">
+    <p>Movement up to this share of the frame counts as shake and is removed. The crop only grows as far as the shake actually goes.</p>
+  </div>
+  <div class="setting">
+    <label>Frames before movement counts as intentional <input type="number" data-intent min="1" max="60" value="5" aria-label="Frames before movement counts as intentional"></label>
+    <p>Movement past the threshold that lasts this long is kept as a pan or tilt. Shorter jolts are smoothed.</p>
+  </div>
+</template>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const sections = ["pick", "work", "done", "failed"];
-const show = (name) => sections.forEach((s) => ($(s).hidden = s !== name));
 const JOB_KEY = "minis-job";
+const ICONS = {
+  play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>',
+  sound: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>',
+  muted: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="m22 9-6 6M16 9l6 6"/></svg>',
+};
 let file = null;
 let pollTimer = null;
+let currentJob = null;   // { id, name, size }
+let lastResult = null;   // { settings, summary } of the run being shown
+
+function show(name) {
+  sections.forEach((s) => ($(s).hidden = s !== name));
+  document.body.classList.toggle("wide", name === "done");
+  if (name !== "done") stopPlayers();
+}
 
 function storage(fn) {
   try { return fn(window.localStorage); } catch { return null; }
@@ -251,10 +343,39 @@ function formatSize(bytes) {
   return Math.max(1, Math.round(bytes / 1e3)) + " KB";
 }
 
-function stabilizedName(name) {
-  const stem = name.replace(/\.[^.]*$/, "") || "video";
-  return stem + "_stabilized.mp4";
+function formatTime(seconds) {
+  if (!isFinite(seconds)) return "0:00";
+  const s = Math.floor(seconds);
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
 }
+
+function stabilizedName(name) {
+  return (name.replace(/\.[^.]*$/, "") || "video") + "_stabilized.mp4";
+}
+
+// ---- Settings controls (same markup on the upload form and the rerun panel) ----
+document.querySelectorAll("[data-settings]").forEach((holder) => {
+  holder.append($("settings-template").content.cloneNode(true));
+  const range = holder.querySelector("[data-threshold]");
+  const out = holder.querySelector("[data-threshold-value]");
+  range.addEventListener("input", () => (out.textContent = range.value + "%"));
+});
+
+function readSettings(holder) {
+  return {
+    threshold: Number(holder.querySelector("[data-threshold]").value),
+    intent_frames: Number(holder.querySelector("[data-intent]").value),
+  };
+}
+
+function writeSettings(holder, s) {
+  holder.querySelector("[data-threshold]").value = s.threshold;
+  holder.querySelector("[data-threshold-value]").textContent = s.threshold + "%";
+  holder.querySelector("[data-intent]").value = s.intent_frames;
+}
+
+const uploadSettings = document.querySelector("#pick [data-settings]");
+const rerunSettings = document.querySelector("#done [data-settings]");
 
 // ---- Choosing a file ----
 function choose(f) {
@@ -284,8 +405,6 @@ document.addEventListener("drop", (e) => {
   if (!$("pick").hidden) choose(e.dataTransfer.files[0]);
 });
 
-$("threshold").addEventListener("input", (e) => ($("threshold-value").textContent = e.target.value + "%"));
-
 // ---- Progress display ----
 const order = ["upload", "analyze", "render"];
 function setStep(current, fraction) {
@@ -301,21 +420,24 @@ function setStep(current, fraction) {
   });
 }
 
-function startWork(name, size) {
-  $("work-name").textContent = name;
-  $("work-size").textContent = size ? formatSize(size) : "";
+function startWork(job) {
+  currentJob = job;
+  $("work-name").textContent = job.name;
+  $("work-size").textContent = job.size ? formatSize(job.size) : "";
   show("work");
 }
 
 // ---- Upload ----
 $("start").addEventListener("click", () => {
   if (!file) return;
+  const settings = readSettings(uploadSettings);
   const form = new FormData();
-  form.append("threshold", $("threshold").value);
-  form.append("intent_frames", $("intent").value);
+  form.append("threshold", settings.threshold);
+  form.append("intent_frames", settings.intent_frames);
   form.append("file", file);
 
-  startWork(file.name, file.size);
+  lastResult = null;
+  startWork({ name: file.name, size: file.size });
   setStep("upload", 0);
   $("work-hint").textContent = "Keep this tab open while the video uploads.";
 
@@ -327,16 +449,36 @@ $("start").addEventListener("click", () => {
     let body = {};
     try { body = JSON.parse(xhr.responseText); } catch {}
     if (xhr.status !== 200) return fail(body.error || "Upload rejected (" + xhr.status + ").");
-    const job = { id: body.id, name: file.name, size: file.size };
-    storage((s) => s.setItem(JOB_KEY, JSON.stringify(job)));
-    follow(job);
+    follow({ id: body.id, name: file.name, size: file.size });
   };
   xhr.send(form);
 });
 
+// ---- Rerun ----
+$("rerun").addEventListener("click", async () => {
+  if (!currentJob) return;
+  $("rerun").disabled = true;
+  try {
+    const res = await fetch("/api/jobs/" + currentJob.id + "/rerun", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(readSettings(rerunSettings)),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 404) return fail("This video is no longer on the server (it may have been restarted). Upload it again to rerun.");
+    if (!res.ok) return fail(body.error || "Rerun rejected (" + res.status + ").");
+    follow({ id: body.id, name: currentJob.name, size: currentJob.size });
+  } catch {
+    fail("Couldn't reach the minIS server. Is it still running?");
+  } finally {
+    $("rerun").disabled = false;
+  }
+});
+
 // ---- Following a job ----
 function follow(job) {
-  startWork(job.name, job.size);
+  storage((s) => s.setItem(JOB_KEY, JSON.stringify(job)));
+  startWork(job);
   setStep("analyze", null);
   $("work-hint").textContent = "Processing takes about a minute per 10 seconds of HD video. You can close this tab and come back.";
   clearTimeout(pollTimer);
@@ -357,26 +499,125 @@ function follow(job) {
       case "queued": setStep("analyze", null); $("work-hint").textContent = "Waiting for another video to finish."; break;
       case "analyzing": setStep("analyze", status.progress); break;
       case "rendering": setStep("render", status.progress); break;
-      case "done": return finish(job, status.summary);
-      case "failed": storage((s) => s.removeItem(JOB_KEY)); return fail(status.error);
+      case "done": return finish(job, status);
+      case "failed": return fail(status.error);
     }
     pollTimer = setTimeout(poll, 1000);
   };
   poll();
 }
 
+// ---- Side-by-side player ----
+// The stabilized video leads (it carries the audio); the original follows it.
+const lead = $("result");
+const other = $("original");
+let withOriginal = false;
+let resumeWhenReady = false;
+
+const players = () => (withOriginal ? [lead, other] : [lead]);
+const playAll = () => players().forEach((v) => v.play().catch(() => {}));
+const pauseAll = () => players().forEach((v) => v.pause());
+
+function stopPlayers() {
+  pauseAll();
+  resumeWhenReady = false;
+}
+
+function syncOther() {
+  if (withOriginal && Math.abs(other.currentTime - lead.currentTime) > 0.1) {
+    other.currentTime = lead.currentTime;
+  }
+}
+
+function updatePlayButton() {
+  const playing = !lead.paused;
+  $("play").innerHTML = playing ? ICONS.pause : ICONS.play;
+  $("play").setAttribute("aria-label", playing ? "Pause" : "Play");
+}
+
+function updateMuteButton() {
+  $("mute").innerHTML = lead.muted ? ICONS.muted : ICONS.sound;
+  $("mute").setAttribute("aria-label", lead.muted ? "Unmute" : "Mute");
+}
+
+function updateTime() {
+  const d = lead.duration;
+  $("time").textContent = formatTime(lead.currentTime) + " / " + formatTime(d);
+  if (isFinite(d) && d > 0 && !seeking) $("seek").value = Math.round((lead.currentTime / d) * 1000);
+}
+
+const togglePlay = () => (lead.paused ? playAll() : pauseAll());
+$("play").addEventListener("click", togglePlay);
+lead.addEventListener("click", togglePlay);
+other.addEventListener("click", togglePlay);
+$("mute").addEventListener("click", () => { lead.muted = !lead.muted; updateMuteButton(); });
+
+let seeking = false;
+$("seek").addEventListener("input", () => {
+  seeking = true;
+  const d = lead.duration;
+  if (!isFinite(d)) return;
+  const t = ($("seek").value / 1000) * d;
+  players().forEach((v) => (v.currentTime = t));
+  $("time").textContent = formatTime(t) + " / " + formatTime(d);
+});
+$("seek").addEventListener("change", () => (seeking = false));
+
+lead.addEventListener("play", () => { updatePlayButton(); if (withOriginal) { syncOther(); other.play().catch(() => {}); } });
+lead.addEventListener("pause", () => { updatePlayButton(); if (withOriginal && !resumeWhenReady) other.pause(); });
+lead.addEventListener("timeupdate", () => { updateTime(); syncOther(); });
+lead.addEventListener("loadedmetadata", updateTime);
+lead.addEventListener("ended", () => { other.pause(); updatePlayButton(); });
+// If either side has to buffer, hold both so they stay in step.
+[lead, other].forEach((v) => {
+  v.addEventListener("waiting", () => {
+    if (!withOriginal || lead.paused) return;
+    resumeWhenReady = true;
+    players().forEach((p) => p !== v && p.pause());
+  });
+  v.addEventListener("canplay", () => {
+    if (!resumeWhenReady || players().some((p) => p.readyState < 3)) return;
+    resumeWhenReady = false;
+    syncOther();
+    playAll();
+  });
+});
+
+function loadPlayers(job, hasOriginal, summary) {
+  stopPlayers();
+  withOriginal = hasOriginal;
+  const compare = $("compare");
+  compare.classList.toggle("single", !hasOriginal);
+  compare.classList.toggle("landscape", summary.width >= summary.height);
+  $("original-figure").hidden = !hasOriginal;
+  $("original-missing").hidden = hasOriginal;
+  // Both panes use the original's shape, so the crop shows as a slight zoom.
+  compare.style.setProperty("--aspect", summary.width + " / " + summary.height);
+
+  lead.src = "/api/jobs/" + job.id + "/video";
+  if (hasOriginal) other.src = "/api/jobs/" + job.id + "/original";
+  else other.removeAttribute("src");
+  $("seek").value = 0;
+  updatePlayButton();
+  updateMuteButton();
+  updateTime();
+}
+
 // ---- Result ----
-function finish(job, s) {
-  const url = "/api/jobs/" + job.id + "/video";
-  $("result").src = url;
-  $("download").href = url;
+function finish(job, status) {
+  const s = status.summary;
+  const settings = { threshold: status.settings.threshold_percent, intent_frames: status.settings.intent_frames };
+  currentJob = job;
+
+  loadPlayers(job, status.original, s);
+  $("download").href = "/api/jobs/" + job.id + "/video";
   $("download").setAttribute("download", stabilizedName(job.name));
   $("stat-crop").textContent = s.crop_percent_x.toFixed(1) + "% × " + s.crop_percent_y.toFixed(1) + "%";
   $("stat-size").textContent = s.output_width + " × " + s.output_height;
   $("stat-shake").textContent = Math.round(s.max_jitter_x) + " × " + Math.round(s.max_jitter_y) + " px";
   $("stat-frames").textContent = s.frames.toLocaleString();
 
-  const notes = [];
+  const notes = ["Settings: " + settings.threshold + "% threshold, " + settings.intent_frames + " frames to count as intentional."];
   const pans = Math.max(s.intentional_frames_x, s.intentional_frames_y);
   if (pans > 0) notes.push(pans + " frames of intentional camera movement were kept.");
   if (s.unreliable_frames / s.frames > 0.1) {
@@ -384,12 +625,25 @@ function finish(job, s) {
       "% of frames had nothing steady to measure (e.g. something passing close to the lens) and were estimated.");
   }
   $("stat-note").textContent = notes.join(" ");
-  $("stat-note").hidden = notes.length === 0;
+  $("stat-note").hidden = false;
+
+  // Compare with the previous run of this video, if this was a rerun.
+  const prev = lastResult && lastResult.jobId !== job.id ? lastResult : null;
+  if (prev) {
+    $("stat-previous").textContent = "Previous run (" + prev.settings.threshold + "%, " + prev.settings.intent_frames +
+      " frames): crop " + prev.summary.crop_percent_x.toFixed(1) + "% × " + prev.summary.crop_percent_y.toFixed(1) +
+      "%, largest shake removed " + Math.round(prev.summary.max_jitter_x) + " × " + Math.round(prev.summary.max_jitter_y) + " px.";
+  }
+  $("stat-previous").hidden = !prev;
+  lastResult = { jobId: job.id, settings, summary: s };
+
+  writeSettings(rerunSettings, settings);
   show("done");
 }
 
 function fail(message) {
   clearTimeout(pollTimer);
+  storage((s) => s.removeItem(JOB_KEY));
   $("error-text").textContent = message;
   show("failed");
 }
@@ -398,13 +652,20 @@ document.querySelectorAll("[data-reset]").forEach((b) =>
   b.addEventListener("click", () => {
     clearTimeout(pollTimer);
     storage((s) => s.removeItem(JOB_KEY));
-    $("result").removeAttribute("src");
+    stopPlayers();
+    lead.removeAttribute("src");
+    other.removeAttribute("src");
     file = null;
+    currentJob = null;
+    lastResult = null;
     $("input").value = "";
     $("chosen").hidden = true;
     $("start").disabled = true;
     show("pick");
   }));
+
+updatePlayButton();
+updateMuteButton();
 
 // Resume a job started earlier in this browser.
 const saved = storage((s) => JSON.parse(s.getItem(JOB_KEY) || "null"));

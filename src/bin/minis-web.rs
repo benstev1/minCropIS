@@ -1,5 +1,6 @@
-//! Local web front end: upload a video, follow its progress, then preview and
-//! download the stabilized result. Jobs run one at a time in the background.
+//! Local web front end: upload a video, follow its progress, compare the result
+//! side by side with the original, rerun with other settings, and download.
+//! Jobs run one at a time in the background.
 
 use anyhow::Context;
 use axum::{
@@ -11,7 +12,7 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,10 +40,21 @@ struct Args {
 #[serde(tag = "state", rename_all = "lowercase")]
 enum Status {
     Queued,
-    Analyzing { progress: f64 },
-    Rendering { progress: f64 },
-    Done { summary: Summary },
-    Failed { error: String },
+    Analyzing {
+        progress: f64,
+    },
+    Rendering {
+        progress: f64,
+    },
+    Done {
+        summary: Summary,
+        settings: minis::Settings,
+        /// Whether `/original` can serve the original for side-by-side viewing.
+        original: bool,
+    },
+    Failed {
+        error: String,
+    },
 }
 
 #[derive(Clone, Serialize)]
@@ -85,10 +97,21 @@ impl Summary {
     }
 }
 
+/// An uploaded video. Several jobs (the first run and any reruns with other
+/// settings) can share one upload.
+struct Upload {
+    input: PathBuf,
+    original_name: String,
+    /// Browser-playable copy of the original, made alongside the first job.
+    original_preview: PathBuf,
+    /// Camera motion measured by the first job. It doesn't depend on the settings,
+    /// so reruns skip straight to rendering.
+    motion: Mutex<Option<Arc<minis::Motion>>>,
+}
+
 struct Job {
     status: Status,
-    /// Name offered when downloading the result.
-    download_name: String,
+    upload: Arc<Upload>,
     output: PathBuf,
 }
 
@@ -103,6 +126,16 @@ struct App {
 type Shared = Arc<App>;
 
 impl App {
+    fn new_id(&self) -> String {
+        format!(
+            "{:x}{:04x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis()),
+            self.next_id.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
     fn set_status(&self, id: &str, status: Status) {
         if let Some(job) = self.jobs.lock().unwrap().get_mut(id) {
             job.status = status;
@@ -130,7 +163,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(|| async { Html(INDEX) }))
         .route("/api/jobs", post(create_job))
         .route("/api/jobs/{id}", get(job_status))
+        .route("/api/jobs/{id}/rerun", post(rerun_job))
         .route("/api/jobs/{id}/video", get(job_video))
+        .route("/api/jobs/{id}/original", get(job_original))
         .layer(DefaultBodyLimit::disable())
         .with_state(app);
 
@@ -159,26 +194,23 @@ fn server_error(error: impl std::fmt::Display) -> Response {
         .into_response()
 }
 
+fn default_settings() -> minis::Settings {
+    minis::Settings {
+        threshold_percent: 2.0,
+        intent_frames: 5,
+        recenter: 0.02,
+    }
+}
+
 /// Accepts a multipart form with optional `threshold` and `intent_frames` fields
 /// followed by the `file` field, and starts a job.
 async fn create_job(State(app): State<Shared>, mut form: Multipart) -> Response {
-    let id = format!(
-        "{:x}{:04x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis()),
-        app.next_id.fetch_add(1, Ordering::Relaxed)
-    );
-    let dir = app.data_dir.join(&id);
+    let dir = app.data_dir.join(app.new_id());
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
         return server_error(e);
     }
 
-    let mut settings = minis::Settings {
-        threshold_percent: 2.0,
-        intent_frames: 5,
-        recenter: 0.02,
-    };
+    let mut settings = default_settings();
     let mut upload = None;
     loop {
         let mut field = match form.next_field().await {
@@ -239,26 +271,70 @@ async fn create_job(State(app): State<Shared>, mut form: Multipart) -> Response 
         return bad_request(e.to_string());
     }
 
-    let output = dir.join("stabilized.mp4");
+    let upload = Arc::new(Upload {
+        input,
+        original_preview: dir.join("original.mp4"),
+        original_name: original,
+        motion: Mutex::new(None),
+    });
+    let id = start_job(&app, upload, settings);
+    Json(serde_json::json!({ "id": id })).into_response()
+}
+
+#[derive(Deserialize)]
+struct Rerun {
+    threshold: f64,
+    intent_frames: usize,
+}
+
+/// Starts a new job on the same upload as job `id`, with different settings.
+async fn rerun_job(
+    State(app): State<Shared>,
+    Path(id): Path<String>,
+    Json(rerun): Json<Rerun>,
+) -> Response {
+    let Some(upload) = app.jobs.lock().unwrap().get(&id).map(|j| j.upload.clone()) else {
+        return (StatusCode::NOT_FOUND, "no such job").into_response();
+    };
+    let settings = minis::Settings {
+        threshold_percent: rerun.threshold,
+        intent_frames: rerun.intent_frames,
+        ..default_settings()
+    };
+    if let Err(e) = settings.validate() {
+        return bad_request(e.to_string());
+    }
+    let id = start_job(&app, upload, settings);
+    Json(serde_json::json!({ "id": id })).into_response()
+}
+
+/// Queues a job and returns its id. Its output sits next to the upload.
+fn start_job(app: &Shared, upload: Arc<Upload>, settings: minis::Settings) -> String {
+    let id = app.new_id();
+    let output = upload.input.with_file_name(format!("{id}.mp4"));
     app.jobs.lock().unwrap().insert(
         id.clone(),
         Job {
             status: Status::Queued,
-            download_name: download_name(&original),
+            upload: upload.clone(),
             output: output.clone(),
         },
     );
 
-    let (app_bg, id_bg) = (app.clone(), id.clone());
+    let (app, job_id) = (app.clone(), id.clone());
     tokio::spawn(async move {
-        let _permit = app_bg.worker.acquire().await;
-        let (app_job, id_job) = (app_bg.clone(), id_bg.clone());
+        let _permit = app.worker.acquire().await;
+        let (app_job, id_job, upload_job) = (app.clone(), job_id.clone(), upload.clone());
         let result = tokio::task::spawn_blocking(move || {
-            run_job(&app_job, &id_job, &input, &output, settings)
+            run_job(&app_job, &id_job, &upload_job, &output, settings)
         })
         .await;
         let status = match result {
-            Ok(Ok(summary)) => Status::Done { summary },
+            Ok(Ok(summary)) => Status::Done {
+                summary,
+                settings,
+                original: upload.original_preview.exists(),
+            },
             Ok(Err(e)) => Status::Failed {
                 error: format!("{e:#}"),
             },
@@ -266,28 +342,50 @@ async fn create_job(State(app): State<Shared>, mut form: Multipart) -> Response 
                 error: format!("processing crashed: {e}"),
             },
         };
-        app_bg.set_status(&id_bg, status);
+        app.set_status(&job_id, status);
     });
-
-    Json(serde_json::json!({ "id": id })).into_response()
+    id
 }
 
 fn run_job(
     app: &App,
     id: &str,
-    input: &std::path::Path,
+    upload: &Upload,
     output: &std::path::Path,
     settings: minis::Settings,
 ) -> anyhow::Result<Summary> {
+    let input = &upload.input;
     let total = minis::video::probe(input)
         .map_err(|_| anyhow::anyhow!("That file isn't a video ffmpeg can read."))?
         .frame_count;
-    app.set_status(id, Status::Analyzing { progress: 0.0 });
-    let analysis = minis::analyze(input, settings, |done| {
-        // The frame count is an estimate, so hold below 100% until analysis ends.
-        let progress = total.map_or(0.0, |t| (done as f64 / t as f64).min(0.99));
-        app.set_status(id, Status::Analyzing { progress });
-    })?;
+
+    // Make the side-by-side copy of the original in parallel with stabilizing.
+    // Write to a temporary name so a half-written file is never served.
+    let preview = (!upload.original_preview.exists()).then(|| {
+        let (input, path) = (input.clone(), upload.original_preview.clone());
+        std::thread::spawn(move || {
+            let partial = path.with_file_name("original.partial.mp4");
+            minis::video::browser_preview(&input, &partial)?;
+            std::fs::rename(&partial, &path)?;
+            anyhow::Ok(())
+        })
+    });
+
+    let cached = upload.motion.lock().unwrap().clone();
+    let motion = match cached {
+        Some(motion) => motion,
+        None => {
+            app.set_status(id, Status::Analyzing { progress: 0.0 });
+            let motion = Arc::new(minis::measure(input, |done| {
+                // The frame count is an estimate, so hold below 100% until measuring ends.
+                let progress = total.map_or(0.0, |t| (done as f64 / t as f64).min(0.99));
+                app.set_status(id, Status::Analyzing { progress });
+            })?);
+            *upload.motion.lock().unwrap() = Some(motion.clone());
+            motion
+        }
+    };
+    let analysis = minis::plan(&motion, settings);
 
     let frames = analysis.frames.len().max(1);
     app.set_status(id, Status::Rendering { progress: 0.0 });
@@ -295,6 +393,13 @@ fn run_job(
         let progress = done as f64 / frames as f64;
         app.set_status(id, Status::Rendering { progress });
     })?;
+
+    // A missing side-by-side view shouldn't fail the job; the page shows the result alone.
+    match preview.map(|handle| handle.join()) {
+        Some(Ok(Err(e))) => eprintln!("job {id}: original preview failed: {e:#}"),
+        Some(Err(_)) => eprintln!("job {id}: original preview crashed"),
+        _ => {}
+    }
     Ok(Summary::new(&analysis))
 }
 
@@ -306,21 +411,41 @@ async fn job_status(State(app): State<Shared>, Path(id): Path<String>) -> Respon
 }
 
 /// The stabilized video, inline so the page can preview it; the page's download
-/// link names the file. Served with HTTP range support so the player can stream and seek.
+/// link names the file.
 async fn job_video(
     State(app): State<Shared>,
     Path(id): Path<String>,
     request: Request,
 ) -> Response {
-    let (path, name) = match app.jobs.lock().unwrap().get(&id) {
-        Some(Job {
-            status: Status::Done { .. },
-            output,
-            download_name,
-        }) => (output.clone(), download_name.clone()),
+    let file = match app.jobs.lock().unwrap().get(&id) {
+        Some(
+            job @ Job {
+                status: Status::Done { .. },
+                ..
+            },
+        ) => (job.output.clone(), download_name(&job.upload.original_name)),
         Some(_) => return (StatusCode::CONFLICT, "not finished yet").into_response(),
         None => return (StatusCode::NOT_FOUND, "no such job").into_response(),
     };
+    serve_video(file.0, &file.1, request).await
+}
+
+/// The browser-playable copy of the job's original upload.
+async fn job_original(
+    State(app): State<Shared>,
+    Path(id): Path<String>,
+    request: Request,
+) -> Response {
+    let path = match app.jobs.lock().unwrap().get(&id) {
+        Some(job) if job.upload.original_preview.exists() => job.upload.original_preview.clone(),
+        Some(_) => return (StatusCode::NOT_FOUND, "no original preview").into_response(),
+        None => return (StatusCode::NOT_FOUND, "no such job").into_response(),
+    };
+    serve_video(path, "original.mp4", request).await
+}
+
+/// Serves an MP4 with HTTP range support, so players can stream and seek.
+async fn serve_video(path: PathBuf, name: &str, request: Request) -> Response {
     let Ok(mut response) = ServeFile::new(path).oneshot(request).await;
     if let Ok(value) = HeaderValue::from_str(&format!("inline; filename=\"{name}\"")) {
         response

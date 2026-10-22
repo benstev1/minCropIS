@@ -20,7 +20,7 @@ use video::{Decoder, Encoder, PixelFormat, VideoInfo};
 /// Longest side of the downscaled frames used for motion estimation.
 const ANALYSIS_MAX_DIM: usize = 640;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct Settings {
     /// Jitter threshold as a percentage of the frame, applied to both axes.
     pub threshold_percent: f64,
@@ -86,13 +86,28 @@ pub struct Analysis {
     pub frames: Vec<FrameReport>,
 }
 
+/// Measured camera path of a clip. It doesn't depend on `Settings`, so it can
+/// be reused to re-plan the same clip with different settings.
+#[derive(Debug, Clone)]
+pub struct Motion {
+    pub width: usize,
+    pub height: usize,
+    pub frame_rate: String,
+    /// Camera position per frame, in full-resolution pixels.
+    pub raw_x: Vec<f64>,
+    pub raw_y: Vec<f64>,
+    positions: Vec<motion::Position>,
+}
+
 /// Pass 1: estimate motion, split jitter from intentional movement, and size the crop.
 /// `progress` is called with the number of frames analyzed so far.
-pub fn analyze(
-    input: &Path,
-    settings: Settings,
-    mut progress: impl FnMut(usize),
-) -> Result<Analysis> {
+pub fn analyze(input: &Path, settings: Settings, progress: impl FnMut(usize)) -> Result<Analysis> {
+    Ok(plan(&measure(input, progress)?, settings))
+}
+
+/// The slow, settings-independent part of pass 1: track the camera path.
+/// `progress` is called with the number of frames measured so far.
+pub fn measure(input: &Path, mut progress: impl FnMut(usize)) -> Result<Motion> {
     let VideoInfo {
         width,
         height,
@@ -117,9 +132,27 @@ pub fn analyze(
         bail!("{} contains no frames", input.display());
     }
     outliers::repair(&mut positions, aw, ah);
-    let raw_x: Vec<f64> = positions.iter().map(|p| p.x * sx).collect();
-    let raw_y: Vec<f64> = positions.iter().map(|p| p.y * sy).collect();
+    Ok(Motion {
+        width,
+        height,
+        frame_rate,
+        raw_x: positions.iter().map(|p| p.x * sx).collect(),
+        raw_y: positions.iter().map(|p| p.y * sy).collect(),
+        positions,
+    })
+}
 
+/// The fast part of pass 1: split the measured path into jitter and intentional
+/// movement under `settings`, and size the crop.
+pub fn plan(motion: &Motion, settings: Settings) -> Analysis {
+    let Motion {
+        width,
+        height,
+        ref frame_rate,
+        ref raw_x,
+        ref raw_y,
+        ref positions,
+    } = *motion;
     let threshold_x = settings.threshold_percent / 100.0 * width as f64;
     let threshold_y = settings.threshold_percent / 100.0 * height as f64;
     let params = |threshold| Params {
@@ -127,8 +160,8 @@ pub fn analyze(
         intent_frames: settings.intent_frames,
         recenter: settings.recenter,
     };
-    let xs = path::separate(&raw_x, params(threshold_x));
-    let ys = path::separate(&raw_y, params(threshold_y));
+    let xs = path::separate(raw_x, params(threshold_x));
+    let ys = path::separate(raw_y, params(threshold_y));
 
     let max_abs =
         |samples: &[AxisSample]| samples.iter().map(|s| s.jitter.abs()).fold(0.0, f64::max);
@@ -155,10 +188,10 @@ pub fn analyze(
         })
         .collect();
 
-    Ok(Analysis {
+    Analysis {
         width,
         height,
-        frame_rate,
+        frame_rate: frame_rate.clone(),
         threshold_percent: settings.threshold_percent,
         threshold_x,
         threshold_y,
@@ -170,7 +203,7 @@ pub fn analyze(
         counts_y: count_labels(frames.iter().map(|f| f.y.label)),
         unreliable_frames: frames.iter().filter(|f| !f.reliable).count(),
         frames,
-    })
+    }
 }
 
 fn count_labels(labels: impl Iterator<Item = Label>) -> LabelCounts {

@@ -212,3 +212,31 @@ impl Encoder {
         Ok(())
     }
 }
+
+/// Writes a browser-playable copy of `input`: H.264 with the index first, upright,
+/// no audio. Used to show the original next to the result, since uploads may be
+/// in formats browsers can't play (e.g. HEVC .MOV).
+pub fn browser_preview(input: &Path, output: &Path) -> Result<()> {
+    let out = Command::new("ffmpeg")
+        .args(["-v", "error", "-nostdin", "-y", "-i"])
+        .arg(input)
+        .args([
+            "-map",
+            "0:v:0",
+            "-an",
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        ])
+        .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"])
+        .args(["-pix_fmt", "yuv420p", "-movflags", "+faststart"])
+        .arg(output)
+        .output()
+        .context("failed to start ffmpeg")?;
+    if !out.status.success() {
+        bail!(
+            "ffmpeg preview failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
