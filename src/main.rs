@@ -40,7 +40,7 @@ fn main() -> Result<()> {
     settings.validate()?;
 
     eprintln!("analyzing {} ...", args.input.display());
-    let analysis = minis::analyze(&args.input, settings, |_| {})?;
+    let analysis = minis::analyze(&args.input, settings, |_| Ok(()))?;
 
     if let Some(report) = &args.report {
         let file = std::fs::File::create(report)
@@ -49,7 +49,7 @@ fn main() -> Result<()> {
     }
 
     eprintln!("rendering {} ...", args.output.display());
-    minis::render(&args.input, &args.output, &analysis, |_| {})?;
+    minis::render(&args.input, &args.output, &analysis, |_| Ok(()))?;
 
     let a = &analysis;
     let pct = |kept: usize, size: usize| 100.0 * (size - kept) as f64 / size as f64;

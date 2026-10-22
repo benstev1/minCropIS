@@ -35,8 +35,13 @@ cargo run --release --bin minis-web
 Then open <http://localhost:8765>. Drop in a video, optionally adjust the settings, and
 follow the upload, analysis and rendering progress. When it's done you can preview the
 result and download it. Jobs run one at a time, and the page picks a job back up if you
-reload it. Uploads and results are kept in the system temp folder (`/tmp/minis-web`), or
-in `--data-dir`. Use `--addr` to listen on another address or port.
+reload it. Use `--addr` to listen on another address or port.
+
+Nothing is kept longer than it's needed. While a video is being worked on, its working files
+(the upload, a preview copy of the original and the latest result) are in the system temp
+folder (`/tmp/minis-web`), or in `--data-dir`. They're deleted when you choose "Stabilize
+another video", "Try again" or "Cancel", and a rerun's result replaces the previous one. On
+Ctrl+C the server stops any running job and deletes everything before it exits.
 
 ## Desktop app (Windows)
 
@@ -54,6 +59,9 @@ The script copies the sources to `%USERPROFILE%\minis-build` and builds there. T
 time, it also installs the Tauri CLI on Windows and downloads a Windows ffmpeg build from
 gyan.dev. It prints the path of the installer. Running the installer adds the app to the
 Start menu and the desktop.
+
+The app keeps nothing once it closes: it stops any running job and deletes its working
+files on exit. Anything left by a crash is cleared the next time it starts.
 
 The icon is drawn by `desktop/icons/make_icons.py`.
 

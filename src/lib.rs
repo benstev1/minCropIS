@@ -102,14 +102,20 @@ pub struct Motion {
 }
 
 /// Pass 1: estimate motion, split jitter from intentional movement, and size the crop.
-/// `progress` is called with the number of frames analyzed so far.
-pub fn analyze(input: &Path, settings: Settings, progress: impl FnMut(usize)) -> Result<Analysis> {
+/// `progress` is called with the number of frames analyzed so far; returning an
+/// error from it stops the work and returns that error.
+pub fn analyze(
+    input: &Path,
+    settings: Settings,
+    progress: impl FnMut(usize) -> Result<()>,
+) -> Result<Analysis> {
     Ok(plan(&measure(input, progress)?, settings))
 }
 
 /// The slow, settings-independent part of pass 1: track the camera path.
-/// `progress` is called with the number of frames measured so far.
-pub fn measure(input: &Path, mut progress: impl FnMut(usize)) -> Result<Motion> {
+/// `progress` is called with the number of frames measured so far; returning an
+/// error from it stops the work and returns that error.
+pub fn measure(input: &Path, mut progress: impl FnMut(usize) -> Result<()>) -> Result<Motion> {
     let VideoInfo {
         width,
         height,
@@ -127,7 +133,7 @@ pub fn measure(input: &Path, mut progress: impl FnMut(usize)) -> Result<Motion> 
     let mut positions = Vec::new();
     while decoder.read_frame(&mut gray)? {
         positions.push(tracker.track(&gray));
-        progress(positions.len());
+        progress(positions.len())?;
     }
     decoder.finish()?;
     if positions.is_empty() {
@@ -221,12 +227,13 @@ fn count_labels(labels: impl Iterator<Item = Label>) -> LabelCounts {
 }
 
 /// Pass 2: shift each full-color frame by its jitter, crop, and encode.
-/// `progress` is called with the number of frames rendered so far.
+/// `progress` is called with the number of frames rendered so far; returning an
+/// error from it stops the work and returns that error.
 pub fn render(
     input: &Path,
     output: &Path,
     analysis: &Analysis,
-    mut progress: impl FnMut(usize),
+    mut progress: impl FnMut(usize) -> Result<()>,
 ) -> Result<()> {
     let (w, h, crop) = (analysis.width, analysis.height, analysis.crop);
     let mut decoder = Decoder::open(input, PixelFormat::Rgb24, w, h)?;
@@ -240,7 +247,7 @@ pub fn render(
         render::shift_and_crop(&rgb, w, h, crop, frame.x.jitter, frame.y.jitter, &mut out);
         encoder.write_frame(&out)?;
         done += 1;
-        progress(done);
+        progress(done)?;
     }
     encoder.finish()?;
     decoder.finish()

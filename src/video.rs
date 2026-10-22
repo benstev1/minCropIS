@@ -42,7 +42,7 @@ fn collect_stderr(child: &mut Child) -> Option<JoinHandle<String>> {
 }
 
 /// Waits for an ffmpeg child and turns a failure into an error with its message.
-fn wait_for(mut child: Child, stderr: Option<JoinHandle<String>>, what: &str) -> Result<()> {
+fn wait_for(child: &mut Child, stderr: Option<JoinHandle<String>>, what: &str) -> Result<()> {
     let status = child.wait()?;
     let message = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
     if !status.success() {
@@ -52,6 +52,13 @@ fn wait_for(mut child: Child, stderr: Option<JoinHandle<String>>, what: &str) ->
         bail!("ffmpeg {what} failed: {message}");
     }
     Ok(())
+}
+
+/// Kills and reaps an ffmpeg child that is being abandoned (e.g. a cancelled job),
+/// so it stops writing and releases its files.
+fn stop(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// A command for an ffmpeg tool. On Windows it runs without opening a console window.
@@ -177,11 +184,13 @@ impl PixelFormat {
 }
 
 /// Streams decoded frames out of ffmpeg, optionally scaled to `width` x `height`.
+/// Dropping it before `finish` (e.g. on cancellation) stops ffmpeg.
 pub struct Decoder {
     child: Child,
     stderr: Option<JoinHandle<String>>,
-    stdout: BufReader<ChildStdout>,
+    stdout: Option<BufReader<ChildStdout>>,
     frame_bytes: usize,
+    finished: bool,
 }
 
 impl Decoder {
@@ -205,32 +214,46 @@ impl Decoder {
         Ok(Self {
             child,
             stderr,
-            stdout,
+            stdout: Some(stdout),
             frame_bytes: width * height * format.channels(),
+            finished: false,
         })
     }
 
     /// Reads the next frame into `buf`; returns false at end of stream.
     pub fn read_frame(&mut self, buf: &mut Vec<u8>) -> Result<bool> {
         buf.resize(self.frame_bytes, 0);
-        match self.stdout.read_exact(buf) {
+        let stdout = self.stdout.as_mut().expect("decoder already finished");
+        match stdout.read_exact(buf) {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(false),
             Err(e) => Err(e.into()),
         }
     }
 
-    pub fn finish(self) -> Result<()> {
-        drop(self.stdout);
-        wait_for(self.child, self.stderr, "decoder")
+    pub fn finish(mut self) -> Result<()> {
+        self.stdout = None;
+        self.finished = true;
+        wait_for(&mut self.child, self.stderr.take(), "decoder")
+    }
+}
+
+impl Drop for Decoder {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.stdout = None;
+            stop(&mut self.child);
+        }
     }
 }
 
 /// Encodes raw RGB frames to H.264, copying audio from `audio_source` when present.
+/// Dropping it before `finish` (e.g. on cancellation) stops ffmpeg.
 pub struct Encoder {
     child: Child,
     stderr: Option<JoinHandle<String>>,
-    stdin: BufWriter<ChildStdin>,
+    stdin: Option<BufWriter<ChildStdin>>,
+    finished: bool,
 }
 
 impl Encoder {
@@ -275,32 +298,47 @@ impl Encoder {
         Ok(Self {
             child,
             stderr,
-            stdin,
+            stdin: Some(stdin),
+            finished: false,
         })
     }
 
     pub fn write_frame(&mut self, rgb: &[u8]) -> Result<()> {
         self.stdin
+            .as_mut()
+            .expect("encoder already finished")
             .write_all(rgb)
             .context("ffmpeg encoder closed its input")
     }
 
-    pub fn finish(self) -> Result<()> {
-        let Self {
-            child,
-            stderr,
-            stdin,
-        } = self;
-        stdin.into_inner().map_err(|e| e.into_error())?;
-        wait_for(child, stderr, "encoder")
+    pub fn finish(mut self) -> Result<()> {
+        self.finished = true;
+        let stdin = self.stdin.take().expect("encoder already finished");
+        if let Err(e) = stdin.into_inner() {
+            stop(&mut self.child);
+            return Err(e.into_error().into());
+        }
+        wait_for(&mut self.child, self.stderr.take(), "encoder")
+    }
+}
+
+impl Drop for Encoder {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.stdin = None;
+            stop(&mut self.child);
+        }
     }
 }
 
 /// Writes a browser-playable copy of `input`: H.264 with the index first, upright,
 /// no audio. Used to show the original next to the result, since uploads may be
 /// in formats browsers can't play (e.g. HEVC .MOV).
-pub fn browser_preview(input: &Path, output: &Path) -> Result<()> {
-    let out = tool("ffmpeg")
+///
+/// `should_stop` is polled while it runs; when it returns true, ffmpeg is
+/// stopped and an error returned.
+pub fn browser_preview(input: &Path, output: &Path, should_stop: impl Fn() -> bool) -> Result<()> {
+    let mut child = tool("ffmpeg")
         .args(["-v", "error", "-nostdin", "-y", "-i"])
         .arg(input)
         .args([
@@ -314,13 +352,19 @@ pub fn browser_preview(input: &Path, output: &Path) -> Result<()> {
         .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"])
         .args(["-pix_fmt", "yuv420p", "-movflags", "+faststart"])
         .arg(output)
-        .output()
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
         .context("failed to start ffmpeg")?;
-    if !out.status.success() {
-        bail!(
-            "ffmpeg preview failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+    let stderr = collect_stderr(&mut child);
+    loop {
+        if child.try_wait()?.is_some() {
+            return wait_for(&mut child, stderr, "preview");
+        }
+        if should_stop() {
+            stop(&mut child);
+            bail!("cancelled");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    Ok(())
 }

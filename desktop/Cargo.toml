@@ -7,7 +7,7 @@ description = "Bens Super Cool Image Stabilizer"
 [dependencies]
 minis = { version = "0.1.0", path = ".." }
 tauri = "2"
-tokio = { version = "1.54.1", features = ["net"] }
+tokio = { version = "1.54.1", features = ["net", "sync"] }
 
 [build-dependencies]
 tauri-build = "2"

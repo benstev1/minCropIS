@@ -239,6 +239,7 @@
       <li class="step" data-step="render"><span class="dot"></span><span>Rendering</span><span class="pct"></span><div class="bar"><div></div></div></li>
     </ol>
     <p class="hint" id="work-hint"></p>
+    <button class="button secondary" data-reset>Cancel</button>
   </section>
 
   <!-- 3. Done -->
@@ -318,6 +319,7 @@ const ICONS = {
 let file = null;
 let pollTimer = null;
 let currentJob = null;   // { id, name, size }
+let uploadXhr = null;    // the upload in progress, if any
 let lastResult = null;   // { settings, summary } of the run being shown
 
 function show(name) {
@@ -435,10 +437,12 @@ $("start").addEventListener("click", () => {
   $("work-hint").textContent = "Keep this tab open while the video uploads.";
 
   const xhr = new XMLHttpRequest();
+  uploadXhr = xhr;
   xhr.open("POST", "/api/jobs");
   xhr.upload.onprogress = (e) => { if (e.lengthComputable) setStep("upload", e.loaded / e.total); };
   xhr.onerror = () => fail("The upload failed. Is the minIS server still running?");
   xhr.onload = () => {
+    uploadXhr = null;
     let body = {};
     try { body = JSON.parse(xhr.responseText); } catch {}
     if (xhr.status !== 200) return fail(body.error || "Upload rejected (" + xhr.status + ").");
@@ -451,6 +455,8 @@ $("start").addEventListener("click", () => {
 $("rerun").addEventListener("click", async () => {
   if (!currentJob) return;
   $("rerun").disabled = true;
+  // The rerun's result replaces this one on the server, so let go of its files.
+  releasePlayers();
   try {
     const res = await fetch("/api/jobs/" + currentJob.id + "/rerun", {
       method: "POST",
@@ -641,13 +647,23 @@ function fail(message) {
   show("failed");
 }
 
+// Stops playback and closes the players' connections to the video files.
+function releasePlayers() {
+  stopPlayers();
+  [lead, other].forEach((v) => { v.removeAttribute("src"); v.load(); });
+}
+
+// Nothing is kept once the user moves on: cancel the upload or job and delete
+// the original and every result for this video from the server.
 document.querySelectorAll("[data-reset]").forEach((b) =>
   b.addEventListener("click", () => {
     clearTimeout(pollTimer);
     storage((s) => s.removeItem(JOB_KEY));
-    stopPlayers();
-    lead.removeAttribute("src");
-    other.removeAttribute("src");
+    if (uploadXhr) { uploadXhr.abort(); uploadXhr = null; }
+    releasePlayers();
+    if (currentJob && currentJob.id) {
+      fetch("/api/jobs/" + currentJob.id, { method: "DELETE", keepalive: true }).catch(() => {});
+    }
     file = null;
     currentJob = null;
     lastResult = null;

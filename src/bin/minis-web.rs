@@ -25,6 +25,10 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("binding {}", args.addr))?;
     println!("minIS web app on http://{}", listener.local_addr()?);
-    println!("files are kept in {}", data_dir.display());
-    minis::web::serve(listener, data_dir).await
+    println!("working files go in {}", data_dir.display());
+    println!("press Ctrl+C to stop (uploads and results are deleted on exit)");
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    minis::web::serve(listener, data_dir, ctrl_c).await
 }
